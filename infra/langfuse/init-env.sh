@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="$DIR/.env"
+
+if [ -f "$ENV_FILE" ] && [ "${1:-}" != "--force" ]; then
+  echo "infra/langfuse/.env já existe (use --force para recriar)"
+  exit 0
+fi
+
+rand() {
+  openssl rand -hex "${1:-16}"
+}
+
+PG_PASS="$(rand 12)"
+CH_PASS="$(rand 12)"
+REDIS_PASS="$(rand 12)"
+MINIO_PASS="$(rand 12)"
+NEXTAUTH_SECRET="$(rand 16)"
+SALT="$(rand 8)"
+ENCRYPTION_KEY="$(rand 32)"
+INIT_USER_PASS="$(rand 8)"
+PUBLIC_KEY="pk-lf-$(rand 16)"
+SECRET_KEY="sk-lf-$(rand 16)"
+IMAGE_TAG="${LANGFUSE_IMAGE_TAG:-4.80.0}"
+
+cat > "$ENV_FILE" <<EOF
+LANGFUSE_IMAGE_TAG=$IMAGE_TAG
+TELEMETRY_ENABLED=false
+
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=$NEXTAUTH_SECRET
+SALT=$SALT
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+
+POSTGRES_PASSWORD=$PG_PASS
+DATABASE_URL=postgresql://postgres:$PG_PASS@postgres:5432/postgres
+
+CLICKHOUSE_USER=clickhouse
+CLICKHOUSE_PASSWORD=$CH_PASS
+
+REDIS_AUTH=$REDIS_PASS
+
+MINIO_ROOT_USER=minio
+MINIO_ROOT_PASSWORD=$MINIO_PASS
+
+LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=minio
+LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=$MINIO_PASS
+LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID=minio
+LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY=$MINIO_PASS
+
+LANGFUSE_INIT_ORG_ID=aiw
+LANGFUSE_INIT_ORG_NAME=aiw
+LANGFUSE_INIT_PROJECT_ID=aiw
+LANGFUSE_INIT_PROJECT_NAME=aiw
+LANGFUSE_INIT_PROJECT_PUBLIC_KEY=$PUBLIC_KEY
+LANGFUSE_INIT_PROJECT_SECRET_KEY=$SECRET_KEY
+LANGFUSE_INIT_USER_EMAIL=aiw@example.com
+LANGFUSE_INIT_USER_NAME=aiw
+LANGFUSE_INIT_USER_PASSWORD=$INIT_USER_PASS
+EOF
+
+chmod 600 "$ENV_FILE"
+
+echo "criado $ENV_FILE"
+echo "carregue no shell com: source infra/langfuse/env.sh"

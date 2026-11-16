@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Placeholders e defaults públicos do compose oficial do Langfuse"
+paths = [
+  '''infra/langfuse/compose\.yaml''',
+  '''infra/langfuse/\.env\.example''',
+]

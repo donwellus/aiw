@@ -1,0 +1,10 @@
+bin/
+dist/
+coverage.out
+.aiw/
+.env
+.env.*
+!.env.example
+infra/langfuse/.env
+*.log
+.DS_Store

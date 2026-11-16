@@ -1,0 +1,874 @@
+package pipeline
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"text/template"
+	"time"
+
+	"github.com/donwellus/aiw/internal/config"
+	"github.com/donwellus/aiw/internal/engine"
+	"github.com/donwellus/aiw/internal/source"
+	"github.com/donwellus/aiw/internal/sources"
+	"github.com/donwellus/aiw/internal/telemetry"
+	"github.com/donwellus/aiw/internal/worktree"
+	"github.com/donwellus/aiw/prompts"
+)
+
+var ErrPaused = errors.New("run pausada aguardando aprovação")
+
+type Options struct {
+	AutoApprove      bool
+	EngineOverride   string
+	BudgetUSD        float64
+	CreatePR         bool
+	DisableWriteBack bool
+}
+
+type Result struct {
+	RunID    string
+	Status   string
+	RunDir   string
+	Worktree string
+	Branch   string
+	PRURL    string
+	Summary  string
+}
+
+type Pipeline struct {
+	Cfg         *config.Config
+	Sources     *sources.Registry
+	Engines     *engine.Registry
+	Telemetry   telemetry.Client
+	Log         *slog.Logger
+	AutoApprove bool
+}
+
+func New(cfg *config.Config) *Pipeline {
+	return &Pipeline{
+		Cfg:       cfg,
+		Sources:   sources.NewRegistry(cfg),
+		Engines:   engine.NewRegistry(cfg),
+		Telemetry: telemetry.New(cfg.Telemetry),
+		Log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+}
+
+func (p *Pipeline) Run(ctx context.Context, task *source.Task, ref source.Ref, repo string, opts Options) (*Result, error) {
+	if task == nil {
+		return nil, errors.New("tarefa vazia")
+	}
+	if repo == "" {
+		return nil, errors.New("repositório não informado")
+	}
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(repoAbs); err != nil {
+		return nil, fmt.Errorf("repositório %s inacessível: %w", repoAbs, err)
+	}
+
+	runID := p.newRunID(task)
+	run := newRunState(runID, task, ref, task.Source, repoAbs)
+	run.EngineOverride = opts.EngineOverride
+	dir := p.runDir(run)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := writeJSON(filepath.Join(dir, "task.json"), task); err != nil {
+		return nil, err
+	}
+
+	wt, err := worktree.Create(ctx, repoAbs, p.Cfg.DataDir(), runID)
+	if err != nil {
+		run.Status = "failed"
+		run.Error = err.Error()
+		if err := saveRun(run, dir); err != nil {
+			p.Log.Warn("falha ao salvar run.json", "error", err)
+		}
+		appendEvent(dir, "run.failed", map[string]any{"error": err.Error()})
+		return &Result{RunID: run.ID, Status: "failed", RunDir: dir, Summary: "falha ao criar worktree"}, err
+	}
+	run.Worktree = wt.Path
+	run.Branch = wt.Branch
+	run.BaseCommit = wt.BaseCommit
+	if err := saveRun(run, dir); err != nil {
+		return nil, err
+	}
+	appendEvent(dir, "run.start", map[string]any{"task": run.Task.ExternalID, "repo": run.Repo, "branch": run.Branch, "engine": opts.EngineOverride})
+	return p.runPipeline(ctx, run, opts)
+}
+
+func (p *Pipeline) Resume(ctx context.Context, runID string, opts Options) (*Result, error) {
+	dir := filepath.Join(p.Cfg.RunsDir(), runID)
+	run, err := loadRun(filepath.Join(dir, "run.json"))
+	if err != nil {
+		return nil, fmt.Errorf("carregando run %s: %w", runID, err)
+	}
+	if _, err := os.Stat(run.Worktree); err != nil {
+		return nil, fmt.Errorf("worktree %s não encontrada: %w", run.Worktree, err)
+	}
+	if opts.EngineOverride == "" {
+		opts.EngineOverride = run.EngineOverride
+	}
+	run.Status = "running"
+	run.Error = ""
+	if err := saveRun(run, dir); err != nil {
+		return nil, err
+	}
+	appendEvent(dir, "run.resume", map[string]any{"stage": run.Stage})
+	return p.runPipeline(ctx, run, opts)
+}
+
+func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options) (*Result, error) {
+	dir := p.runDir(run)
+	budget := opts.BudgetUSD
+	if budget <= 0 {
+		budget = p.Cfg.Defaults.BudgetUSD
+	}
+	trace := p.Telemetry.Start(ctx, telemetry.TraceInfo{
+		ID:   run.ID,
+		Name: "aiw.run",
+		Input: map[string]any{
+			"task": run.Task,
+			"repo": run.Repo,
+		},
+		Metadata: map[string]any{
+			"source":     run.Source,
+			"branch":     run.Branch,
+			"repo":       run.Repo,
+			"task_id":    run.Task.ExternalID,
+			"budget_usd": budget,
+		},
+		Tags:      []string{"aiw", run.Source, p.Cfg.Defaults.Engine},
+		SessionID: run.ID,
+	})
+
+	var runErr error
+	defer func() {
+		trace.Score("success", boolScore(run.Status == "succeeded"), run.Status)
+		trace.Score("cost_usd", run.Usage.CostUSD, "")
+		trace.End(map[string]any{
+			"status":        run.Status,
+			"run_id":        run.ID,
+			"branch":        run.Branch,
+			"pr_url":        run.PRURL,
+			"cost_usd":      run.Usage.CostUSD,
+			"input_tokens":  run.Usage.InputTokens,
+			"output_tokens": run.Usage.OutputTokens,
+		}, runErr)
+		if err := p.Telemetry.Flush(context.Background()); err != nil {
+			p.Log.Warn("falha ao enviar telemetria", "error", err)
+		}
+	}()
+
+	runErr = p.execute(ctx, run, trace, opts, budget)
+	if runErr != nil {
+		if errors.Is(runErr, ErrPaused) {
+			run.Status = "paused"
+			if err := saveRun(run, dir); err != nil {
+				p.Log.Warn("falha ao salvar run.json", "error", err)
+			}
+			appendEvent(dir, "run.paused", map[string]any{"stage": run.Stage})
+			res := p.result(run, "pausada")
+			return res, runErr
+		}
+		run.Status = "failed"
+		run.Error = runErr.Error()
+		if err := saveRun(run, dir); err != nil {
+			p.Log.Warn("falha ao salvar run.json", "error", err)
+		}
+		appendEvent(dir, "run.failed", map[string]any{"error": runErr.Error()})
+		p.writeBack(ctx, run, runErr, opts)
+		return p.result(run, "falhou"), runErr
+	}
+
+	run.Status = "succeeded"
+	run.Stage = "done"
+	p.save(run, dir)
+	appendEvent(dir, "run.succeeded", map[string]any{"branch": run.Branch, "pr_url": run.PRURL})
+	p.writeBack(ctx, run, nil, opts)
+	return p.result(run, "concluída"), nil
+}
+
+func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.Trace, opts Options, budget float64) error {
+	dir := p.runDir(run)
+	for i := range run.Stages {
+		st := &run.Stages[i]
+		if st.Status == "done" {
+			continue
+		}
+		run.Stage = st.Name
+		if st.Status == "gated" && (st.Name == "requirements" || st.Name == "architect") {
+			gate := "spec"
+			if st.Name == "architect" {
+				gate = "plan"
+			}
+			if err := p.gate(ctx, run, gate, trace); err != nil {
+				st.Status = "gated"
+				p.save(run, dir)
+				return err
+			}
+			st.Status = "done"
+			st.EndedAt = time.Now().UTC()
+			p.save(run, dir)
+			continue
+		}
+		st.StartedAt = time.Now().UTC()
+		appendEvent(dir, "stage.start", map[string]any{"stage": st.Name})
+
+		var err error
+		switch st.Name {
+		case "requirements":
+			err = p.runArtifactStage(ctx, run, trace, "requirements", "spec.md", budget)
+			if err == nil {
+				err = p.gate(ctx, run, "spec", trace)
+			}
+		case "architect":
+			err = p.runArtifactStage(ctx, run, trace, "architect", "plan.md", budget)
+			if err == nil {
+				err = p.gate(ctx, run, "plan", trace)
+			}
+		case "implement":
+			err = p.implement(ctx, run, trace, "", budget)
+		case "test":
+			var ok bool
+			ok, err = p.ensureTests(ctx, run, trace, st, budget)
+			if err == nil && !ok {
+				err = errors.New("testes falharam após as tentativas de correção")
+			}
+		case "review":
+			err = p.reviewLoop(ctx, run, trace, st, budget)
+		case "deliver":
+			err = p.deliver(ctx, run, trace, opts)
+		default:
+			err = fmt.Errorf("estágio desconhecido: %s", st.Name)
+		}
+
+		if err != nil {
+			st.EndedAt = time.Now().UTC()
+			if errors.Is(err, ErrPaused) {
+				st.Status = "gated"
+				p.save(run, dir)
+				return err
+			}
+			st.Status = "failed"
+			st.Error = err.Error()
+			p.save(run, dir)
+			appendEvent(dir, "stage.failed", map[string]any{"stage": st.Name, "error": err.Error()})
+			return err
+		}
+		st.Status = "done"
+		st.Error = ""
+		st.EndedAt = time.Now().UTC()
+		p.save(run, dir)
+		appendEvent(dir, "stage.done", map[string]any{"stage": st.Name, "cost_usd": st.CostUSD})
+	}
+	return nil
+}
+
+func (p *Pipeline) runArtifactStage(ctx context.Context, run *RunState, trace telemetry.Trace, stage, artifact string, budget float64) error {
+	data := p.promptData(run)
+	prompt, err := p.render(stage, data)
+	if err != nil {
+		return err
+	}
+	engineName, model := p.engineFor(run, stage)
+	res, err := p.callEngine(ctx, run, trace, stage, engineName, model, prompt, budget)
+	if err != nil {
+		return err
+	}
+	p.writeWork(run, stage+".output.md", res.Output+"\n")
+	artifactPath := p.workArtifact(run, artifact)
+	if _, statErr := os.Stat(artifactPath); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if strings.TrimSpace(res.Output) == "" {
+			return fmt.Errorf("engine %s não gerou %s e não retornou saída", engineName, artifact)
+		}
+		p.writeWork(run, artifact, res.Output+"\n")
+	}
+	p.mirror(run)
+	return nil
+}
+
+func (p *Pipeline) implement(ctx context.Context, run *RunState, trace telemetry.Trace, feedback string, budget float64) error {
+	data := p.promptData(run)
+	data.Feedback = feedback
+	prompt, err := p.render("implement", data)
+	if err != nil {
+		return err
+	}
+	engineName, model := p.engineFor(run, "implement")
+	res, err := p.callEngine(ctx, run, trace, "implement", engineName, model, prompt, budget)
+	if err != nil {
+		return err
+	}
+	p.writeWork(run, "implement.output.md", res.Output+"\n")
+	artifactPath := p.workArtifact(run, "implement.md")
+	if _, statErr := os.Stat(artifactPath); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		p.writeWork(run, "implement.md", res.Output+"\n")
+	}
+	p.mirror(run)
+	appendEvent(p.runDir(run), "implement.done", map[string]any{"feedback": feedback != ""})
+	return nil
+}
+
+func (p *Pipeline) ensureTests(ctx context.Context, run *RunState, trace telemetry.Trace, st *StageState, budget float64) (bool, error) {
+	ok, log, err := p.runTests(ctx, run, trace)
+	if err != nil {
+		return false, err
+	}
+	attempts := 0
+	for !ok && attempts < p.Cfg.Defaults.MaxTestRetries {
+		attempts++
+		st.Rounds = attempts
+		appendEvent(p.runDir(run), "tests.retry", map[string]any{"attempt": attempts})
+		feedback := "Os testes falharam após a implementação. Corrija os problemas:\n\n" + truncateForPrompt(log, 30000)
+		if err := p.implement(ctx, run, trace, feedback, budget); err != nil {
+			return false, err
+		}
+		ok, log, err = p.runTests(ctx, run, trace)
+		if err != nil {
+			return false, err
+		}
+	}
+	return ok, nil
+}
+
+func (p *Pipeline) runTests(ctx context.Context, run *RunState, trace telemetry.Trace) (bool, string, error) {
+	span := trace.Span("stage.test", map[string]any{"commands": p.Cfg.Workspace.TestCommands})
+	var buf bytes.Buffer
+	ok := true
+	if len(p.Cfg.Workspace.TestCommands) == 0 {
+		buf.WriteString("nenhum comando de teste configurado em workspace.test_commands\n")
+	} else {
+		for _, command := range p.Cfg.Workspace.TestCommands {
+			fmt.Fprintf(&buf, "$ %s\n", command)
+			cctx := ctx
+			var cancel context.CancelFunc
+			if timeout := p.Cfg.Defaults.Timeout.Std(); timeout > 0 {
+				cctx, cancel = context.WithTimeout(ctx, timeout)
+			}
+			cmd := exec.CommandContext(cctx, "/bin/sh", "-c", command)
+			cmd.Dir = run.Worktree
+			out, err := cmd.CombinedOutput()
+			if cancel != nil {
+				cancel()
+			}
+			buf.Write(out)
+			if err != nil {
+				ok = false
+				fmt.Fprintf(&buf, "\n[falhou: %v]\n", err)
+			} else {
+				buf.WriteString("\n[ok]\n")
+			}
+			if ctx.Err() != nil {
+				span.End(nil, ctx.Err())
+				return false, buf.String(), ctx.Err()
+			}
+		}
+	}
+	log := buf.String()
+	p.writeWork(run, "test.log", log)
+	p.mirror(run)
+	span.End(map[string]any{"ok": ok}, nil)
+	appendEvent(p.runDir(run), "tests.result", map[string]any{"ok": ok})
+	return ok, log, nil
+}
+
+func (p *Pipeline) reviewLoop(ctx context.Context, run *RunState, trace telemetry.Trace, st *StageState, budget float64) error {
+	testLog := p.readWork(run, "test.log")
+	if _, err := p.snapshotDiff(run); err != nil {
+		return err
+	}
+	review, err := p.runReview(ctx, run, trace, testLog, budget)
+	if err != nil {
+		return err
+	}
+	blocking := parseBlocking(review)
+	rounds := 0
+	for len(blocking) > 0 && rounds < p.Cfg.Defaults.MaxReviewRounds {
+		rounds++
+		st.Rounds = rounds
+		appendEvent(p.runDir(run), "review.blocking", map[string]any{"round": rounds, "blocking": blocking})
+		feedback := "A revisão encontrou bloqueios. Corrija todos:\n\n" + strings.Join(blocking, "\n")
+		if err := p.implement(ctx, run, trace, feedback, budget); err != nil {
+			return err
+		}
+		ok, log, err := p.runTests(ctx, run, trace)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("testes falharam após correção dos bloqueios da revisão")
+		}
+		if _, err := p.snapshotDiff(run); err != nil {
+			return err
+		}
+		review, err = p.runReview(ctx, run, trace, log, budget)
+		if err != nil {
+			return err
+		}
+		blocking = parseBlocking(review)
+	}
+	if len(blocking) > 0 {
+		return fmt.Errorf("revisão ainda com %d bloqueio(s) após %d rodada(s): %s", len(blocking), rounds, strings.Join(blocking, "; "))
+	}
+	return nil
+}
+
+func (p *Pipeline) runReview(ctx context.Context, run *RunState, trace telemetry.Trace, testLog string, budget float64) (string, error) {
+	data := p.promptData(run)
+	data.TestLog = truncateForPrompt(testLog, 30000)
+	data.Diff = truncateForPrompt(p.readWork(run, "diff.patch"), 60000)
+	prompt, err := p.render("review", data)
+	if err != nil {
+		return "", err
+	}
+	engineName, model := p.engineFor(run, "review")
+	res, err := p.callEngine(ctx, run, trace, "review", engineName, model, prompt, budget)
+	if err != nil {
+		return "", err
+	}
+	p.writeWork(run, "review.output.md", res.Output+"\n")
+	artifactPath := p.workArtifact(run, "review.md")
+	if _, statErr := os.Stat(artifactPath); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+		if strings.TrimSpace(res.Output) == "" {
+			return "", errors.New("revisão vazia: engine não gerou review.md nem retornou saída")
+		}
+		p.writeWork(run, "review.md", res.Output+"\n")
+	}
+	p.mirror(run)
+	review := p.readWork(run, "review.md")
+	if strings.TrimSpace(review) == "" {
+		return "", errors.New("revisão vazia")
+	}
+	return review, nil
+}
+
+func (p *Pipeline) deliver(ctx context.Context, run *RunState, trace telemetry.Trace, opts Options) error {
+	span := trace.Span("stage.deliver", map[string]any{"branch": run.Branch})
+	wt := &worktree.Worktree{Repo: run.Repo, Path: run.Worktree, Branch: run.Branch, BaseCommit: run.BaseCommit}
+
+	if _, err := p.snapshotDiff(run); err != nil {
+		span.End(nil, err)
+		return err
+	}
+	changed, err := wt.Changed(ctx)
+	if err != nil {
+		span.End(nil, err)
+		return err
+	}
+	if changed {
+		committed, err := wt.Commit(ctx, fmt.Sprintf("aiw: %s (%s)", run.Task.Title, run.ID))
+		if err != nil {
+			span.End(nil, err)
+			return err
+		}
+		if !committed {
+			err := errors.New("commit não criado: nenhuma alteração")
+			span.End(nil, err)
+			return err
+		}
+	} else {
+		ahead, err := wt.CommitsAhead(ctx)
+		if err != nil {
+			span.End(nil, err)
+			return err
+		}
+		if ahead == 0 {
+			err := errors.New("nenhuma alteração detectada no worktree")
+			span.End(nil, err)
+			return err
+		}
+	}
+
+	if opts.CreatePR {
+		if err := p.createPR(ctx, run, wt); err != nil {
+			span.End(nil, err)
+			return err
+		}
+	}
+
+	summary := fmt.Sprintf("# Entrega\n\nRun: %s\nBranch: %s\nPR: %s\n\n## Spec\n\n%s\n", run.ID, run.Branch, run.PRURL, truncateForPrompt(p.readWork(run, "spec.md"), 8000))
+	p.writeWork(run, "deliver.md", summary)
+	p.mirror(run)
+	span.End(map[string]any{"pr_url": run.PRURL, "branch": run.Branch}, nil)
+	return nil
+}
+
+func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Worktree) error {
+	if err := wt.Push(ctx); err != nil {
+		return fmt.Errorf("push da branch %s: %w", run.Branch, err)
+	}
+	base := worktree.DefaultBranch(ctx, run.Repo)
+	title := fmt.Sprintf("aiw: %s", run.Task.Title)
+	body := fmt.Sprintf("## Tarefa\n\n%s (%s)\n\n## Run\n\n- id: %s\n- branch: %s\n- custo: US$ %.2f\n\n## Spec\n\n%s\n",
+		run.Task.Title, run.Task.ExternalID, run.ID, run.Branch, run.Usage.CostUSD, truncateForPrompt(p.readWork(run, "spec.md"), 8000))
+
+	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", run.Branch)
+	cmd.Dir = run.Worktree
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr create: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	run.PRURL = strings.TrimSpace(stdout.String())
+	p.writeWork(run, "pr.md", run.PRURL+"\n")
+	p.mirror(run)
+	return nil
+}
+
+func (p *Pipeline) gate(ctx context.Context, run *RunState, name string, trace telemetry.Trace) error {
+	if !p.Cfg.Workspace.GateEnabled(name) {
+		return nil
+	}
+	if run.Gates[name] == "approved" {
+		return nil
+	}
+	if p.AutoApprove {
+		run.Gates[name] = "approved"
+		p.save(run, p.runDir(run))
+		appendEvent(p.runDir(run), "gate.approved", map[string]any{"gate": name, "mode": "auto"})
+		trace.Event("gate.approved", map[string]any{"gate": name, "mode": "auto"})
+		return nil
+	}
+	if !isInteractive() {
+		return fmt.Errorf("%w: gate %s. Aprove com 'aiw approve %s %s' ou use --auto", ErrPaused, name, run.ID, name)
+	}
+	fmt.Printf("\nGate %s: artefatos em %s\nAprovar? [y/N] ", name, filepath.Join(run.Worktree, ".aiw-run"))
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	if answer == "y" || answer == "yes" || answer == "s" || answer == "sim" {
+		run.Gates[name] = "approved"
+		p.save(run, p.runDir(run))
+		appendEvent(p.runDir(run), "gate.approved", map[string]any{"gate": name, "mode": "interactive"})
+		trace.Event("gate.approved", map[string]any{"gate": name, "mode": "interactive"})
+		return nil
+	}
+	appendEvent(p.runDir(run), "gate.rejected", map[string]any{"gate": name})
+	trace.Event("gate.rejected", map[string]any{"gate": name})
+	return fmt.Errorf("%w: gate %s rejeitado; edite o artefato e rode 'aiw resume %s'", ErrPaused, name, run.ID)
+}
+
+func (p *Pipeline) callEngine(ctx context.Context, run *RunState, trace telemetry.Trace, stage, engineName, model, prompt string, budget float64) (engine.Result, error) {
+	if budget > 0 && run.Usage.CostUSD >= budget {
+		return engine.Result{}, fmt.Errorf("orçamento de US$ %.2f excedido (gasto atual US$ %.2f)", budget, run.Usage.CostUSD)
+	}
+	eng, err := p.Engines.Get(engineName)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	span := trace.Span("stage."+stage, prompt)
+	start := time.Now()
+	res, err := eng.Run(ctx, engine.Request{
+		Stage:   stage,
+		Prompt:  prompt,
+		Workdir: run.Worktree,
+		Model:   model,
+		Timeout: p.Cfg.Defaults.Timeout.Std(),
+	})
+	end := time.Now()
+	level := "DEFAULT"
+	if err != nil {
+		level = "ERROR"
+	}
+	span.Generation(telemetry.Generation{
+		Name:   stage,
+		Model:  model,
+		Input:  prompt,
+		Output: res.Output,
+		Usage: telemetry.Usage{
+			InputTokens:  res.Usage.InputTokens,
+			OutputTokens: res.Usage.OutputTokens,
+			CostUSD:      res.Usage.CostUSD,
+		},
+		Metadata: map[string]any{
+			"engine":      engineName,
+			"command":     res.Command,
+			"duration_ms": res.Duration.Milliseconds(),
+		},
+		Level: level,
+		Start: start,
+		End:   end,
+	})
+	span.End(res.Output, err)
+	run.Usage = run.Usage.Add(res.Usage)
+	if st := run.stage(stage); st != nil {
+		st.Engine = engineName
+		st.Model = model
+		st.CostUSD += res.Usage.CostUSD
+	}
+	p.save(run, p.runDir(run))
+	appendEvent(p.runDir(run), "engine.call", map[string]any{
+		"stage":         stage,
+		"engine":        engineName,
+		"model":         model,
+		"cost_usd":      res.Usage.CostUSD,
+		"input_tokens":  res.Usage.InputTokens,
+		"output_tokens": res.Usage.OutputTokens,
+		"duration_ms":   res.Duration.Milliseconds(),
+	})
+	return res, err
+}
+
+func (p *Pipeline) engineFor(run *RunState, stage string) (string, string) {
+	name := p.Cfg.StageEngine(stage)
+	if run.EngineOverride != "" {
+		name = run.EngineOverride
+	}
+	model := p.Cfg.StageModel(stage)
+	if run.EngineOverride != "" {
+		if ec, err := p.Cfg.EngineConfig(name); err == nil {
+			model = ec.Model
+		}
+	}
+	return name, model
+}
+
+func (p *Pipeline) promptData(run *RunState) prompts.Data {
+	return prompts.Data{
+		Task:          run.Task,
+		Repo:          run.Repo,
+		Worktree:      run.Worktree,
+		RunDir:        p.runDir(run),
+		SpecPath:      p.workArtifact(run, "spec.md"),
+		PlanPath:      p.workArtifact(run, "plan.md"),
+		ImplementPath: p.workArtifact(run, "implement.md"),
+		ReviewPath:    p.workArtifact(run, "review.md"),
+		DiffPath:      p.workArtifact(run, "diff.patch"),
+		TestLogPath:   p.workArtifact(run, "test.log"),
+		TestCommands:  p.Cfg.Workspace.TestCommands,
+	}
+}
+
+func (p *Pipeline) render(name string, data prompts.Data) (string, error) {
+	raw, err := fs.ReadFile(prompts.FS, name+".md")
+	if err != nil {
+		return "", fmt.Errorf("prompt %s não encontrado: %w", name, err)
+	}
+	tmpl, err := template.New(name).Option("missingkey=zero").Parse(string(raw))
+	if err != nil {
+		return "", fmt.Errorf("prompt %s inválido: %w", name, err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func (p *Pipeline) snapshotDiff(run *RunState) (string, error) {
+	wt := &worktree.Worktree{Repo: run.Repo, Path: run.Worktree, Branch: run.Branch, BaseCommit: run.BaseCommit}
+	diff, err := wt.Diff(context.Background())
+	if err != nil {
+		return "", err
+	}
+	p.writeWork(run, "diff.patch", diff)
+	p.mirror(run)
+	return diff, nil
+}
+
+func (p *Pipeline) runDir(run *RunState) string {
+	return filepath.Join(p.Cfg.RunsDir(), run.ID)
+}
+
+func (p *Pipeline) workArtifact(run *RunState, name string) string {
+	return filepath.Join(run.Worktree, ".aiw-run", name)
+}
+
+func (p *Pipeline) writeWork(run *RunState, name, content string) string {
+	path := p.workArtifact(run, name)
+	if err := writeFile(path, content); err != nil {
+		p.Log.Warn("falha ao gravar artefato", "path", path, "error", err)
+	}
+	return path
+}
+
+func (p *Pipeline) readWork(run *RunState, name string) string {
+	data, err := os.ReadFile(p.workArtifact(run, name))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func (p *Pipeline) mirror(run *RunState) {
+	if run.Artifacts == nil {
+		run.Artifacts = map[string]string{}
+	}
+	src := filepath.Join(run.Worktree, ".aiw-run")
+	dest := p.runDir(run)
+	err := filepath.WalkDir(src, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := writeFile(filepath.Join(dest, rel), string(data)); err != nil {
+			return err
+		}
+		run.Artifacts[rel] = filepath.Join(dest, rel)
+		return nil
+	})
+	if err != nil {
+		p.Log.Warn("falha ao espelhar artefatos", "error", err)
+	}
+}
+
+func (p *Pipeline) writeBack(ctx context.Context, run *RunState, runErr error, opts Options) {
+	if opts.DisableWriteBack {
+		return
+	}
+	src, err := p.Sources.Open(run.Source)
+	if err != nil {
+		p.Log.Warn("write-back ignorado: fonte indisponível", "source", run.Source, "error", err)
+		return
+	}
+	writer, ok := src.(source.StatusWriter)
+	if !ok {
+		return
+	}
+	dir := p.runDir(run)
+	if runErr == nil {
+		err = writer.MarkDone(ctx, run.Ref, source.RunResult{RunID: run.ID, PRURL: run.PRURL, Summary: "run concluída"})
+	} else {
+		err = writer.MarkFailed(ctx, run.Ref, runErr)
+	}
+	if err != nil {
+		p.Log.Warn("falha no write-back", "error", err)
+		appendEvent(dir, "writeback.failed", map[string]any{"error": err.Error()})
+		return
+	}
+	appendEvent(dir, "writeback.done", map[string]any{"success": runErr == nil})
+}
+
+func (p *Pipeline) save(run *RunState, dir string) {
+	if err := saveRun(run, dir); err != nil {
+		p.Log.Warn("falha ao salvar run.json", "error", err)
+	}
+}
+
+func (p *Pipeline) result(run *RunState, summary string) *Result {
+	return &Result{
+		RunID:    run.ID,
+		Status:   run.Status,
+		RunDir:   p.runDir(run),
+		Worktree: run.Worktree,
+		Branch:   run.Branch,
+		PRURL:    run.PRURL,
+		Summary:  summary,
+	}
+}
+
+func (p *Pipeline) newRunID(task *source.Task) string {
+	slug := slugify(task.ExternalID)
+	if slug == "" {
+		slug = "task"
+	}
+	if len(slug) > 24 {
+		slug = slug[:24]
+	}
+	id := time.Now().UTC().Format("20060102-150405") + "-" + slug
+	if _, err := os.Stat(filepath.Join(p.Cfg.RunsDir(), id)); err == nil {
+		id = fmt.Sprintf("%s-%04x", id, time.Now().UnixNano()&0xffff)
+	}
+	return id
+}
+
+func slugify(value string) string {
+	var buf strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(value) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			buf.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			buf.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(buf.String(), "-")
+}
+
+func parseBlocking(review string) []string {
+	var blocking []string
+	for _, line := range strings.Split(review, "\n") {
+		trimmed := strings.TrimSpace(line)
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		trimmed = strings.TrimPrefix(trimmed, "* ")
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "BLOCKING:") {
+			blocking = append(blocking, trimmed)
+		}
+	}
+	return blocking
+}
+
+func boolScore(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func truncateForPrompt(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max] + "\n...(truncado)\n"
+}
+
+func isInteractive() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func writeFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+func writeJSON(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFile(path, string(data))
+}
