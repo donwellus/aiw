@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -86,10 +87,36 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Mostra a versão",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), Version)
+			fmt.Fprintln(cmd.OutOrStdout(), versionString())
 			return nil
 		},
 	}
+}
+
+func versionString() string {
+	if Version != "" && Version != "dev" {
+		return Version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return Version
+	}
+	var revision string
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" && len(setting.Value) >= 7 {
+			revision = setting.Value[:7]
+		}
+	}
+	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+		if revision != "" {
+			return info.Main.Version + " (" + revision + ")"
+		}
+		return info.Main.Version
+	}
+	if revision != "" {
+		return "dev (" + revision + ")"
+	}
+	return Version
 }
 
 func resolveTask(ctx context.Context, cfg *config.Config, sourceName, taskArg string) (source.Source, source.Ref, *source.Task, error) {
