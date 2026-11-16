@@ -91,7 +91,7 @@ Artefatos ficam em `.aiw/runs/<run-id>/` e o estado em `run.json`; eventos em `e
 
 ## Requisitos
 
-- Go 1.21+
+- Go 1.26.11+ (toolchain baixado automaticamente por versões recentes do Go)
 - `git`
 - `claude` e/ou `opencode` no PATH para execuções reais
 - `gh` autenticado apenas para `--pr`
@@ -266,7 +266,7 @@ Para reportar vulnerabilidades, siga [SECURITY.md](SECURITY.md); não abra issue
 - `opencode` nega edições em modo headless: configure permissões no opencode ou use `auto_approve: true` na engine. O agente roda em worktree isolado; nunca habilite bypass no workspace principal.
 - `aiw doctor` aponta Langfuse inacessível: confira `make telemetry-up`, a porta 3000 e se `source infra/langfuse/env.sh` foi carregado.
 - `aiw run` não encontra a tarefa: confira `--root`, o caminho do arquivo e se o frontmatter tem `id` único.
-- Go 1.21 é o mínimo testado; atualizar o toolchain é recomendado (rode `make check` após atualizar).
+- Go 1.26.11+ é o mínimo; o `go` baixa o toolchain necessário automaticamente. Rode `make check` após atualizar.
 
 ## Desenvolvimento
 
@@ -297,7 +297,7 @@ docs/adr             decisões de arquitetura
 
 ## CI e qualidade
 
-- `ci.yml`: build, `go vet`, `go test -race`, gofmt, golangci-lint e smoke test em Ubuntu (Go 1.21 e stable) e macOS.
+- `ci.yml`: build, `go vet`, `go test -race`, gofmt, golangci-lint e smoke test em Ubuntu (Go 1.26 e stable) e macOS.
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 

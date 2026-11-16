@@ -20,7 +20,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            go: "1.21.x"
+            go: "1.26.x"
           - os: ubuntu-latest
             go: stable
           - os: macos-latest
@@ -59,8 +59,9 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
-      - uses: golangci/golangci-lint-action@v6
+          go-version-file: go.mod
+          cache: true
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.64.8
+          version: v2.15.0
           args: --timeout=5m
