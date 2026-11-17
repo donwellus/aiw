@@ -321,7 +321,7 @@ Precedência de engine: `--engine` > `stages.<estágio>.engine` > `defaults.engi
 
 ### Fontes
 
-Implementadas: `folder` e `github`. Linear/Jira/Trello usam os mesmos contratos.
+Implementadas: `folder`, `github` e `linear`. Jira/Trello usam os mesmos contratos.
 
 #### GitHub
 
@@ -351,6 +351,37 @@ aiw daemon --source github --interval 60s
 - `needs_input`/cancelamento removem `aiw:running` e liberam o claim.
 - `aiw release` remove `aiw:running` e devolve estado local para `todo`.
 - O repositório local é resolvido por `repo_path`, `repo:`/label `repo:*` ou `workspace.default_repo`.
+
+#### Linear
+
+```yaml
+sources:
+  linear:
+    driver: linear
+    team: ENG
+    repo_path: ../app
+    states: [Todo, "In Progress"]
+    running_state: In Progress
+    done_state: Done
+    failed_state: Todo
+    pending_state: Todo
+    comment: true
+    # api_key_env: LINEAR_API_KEY
+```
+
+```bash
+export LINEAR_API_KEY=...
+aiw list --source linear
+aiw run --source linear --task linear:ENG-123 --repo ../app --auto
+aiw work --source linear --workers 2
+aiw daemon --source linear --interval 60s
+```
+
+- GraphQL API (`api.linear.app/graphql`), lendo título, descrição, labels, assignee, estado e comentários.
+- Checklists `- [ ]` viram critérios de aceite.
+- Write-back move o estado para `running_state`/`done_state`/`failed_state` e comenta run/branch/PR/custo; `needs_input`/cancelado vão para `pending_state`.
+- `aiw doctor` valida a API key, o viewer e o time.
+- O time é obrigatório; `states` filtra o que entra na fila; `repo_path` mapeia para o checkout local.
 
 #### Folder
 
@@ -461,7 +492,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 ## Limitações atuais
 
-- Fonte `folder` e `github`; Linear/Jira/Trello são os próximos conectores.
+- Fontes `folder`, `github` e `linear`; Jira/Trello são os próximos conectores.
 - Evals cobrem pipeline + comando de verificação; LLM-as-judge e comparação com diff de referência ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.

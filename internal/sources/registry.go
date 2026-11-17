@@ -8,6 +8,7 @@ import (
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/source/folder"
 	"github.com/donwellus/aiw/internal/source/github"
+	"github.com/donwellus/aiw/internal/source/linear"
 )
 
 type Registry struct {
@@ -31,8 +32,10 @@ func (r *Registry) Open(name string) (source.Source, error) {
 		return folder.New(name, r.cfg.Root, sc)
 	case "github":
 		return github.New(name, r.cfg.Root, sc)
+	case "linear":
+		return linear.New(name, r.cfg.Root, sc)
 	default:
-		return nil, fmt.Errorf("driver de fonte %q ainda não implementado (disponível: folder, github)", sc.Driver)
+		return nil, fmt.Errorf("driver de fonte %q ainda não implementado (disponível: folder, github, linear)", sc.Driver)
 	}
 }
 

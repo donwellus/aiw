@@ -39,11 +39,12 @@ type Comment struct {
 }
 
 type Ref struct {
-	Source    string    `json:"source"`
-	ID        string    `json:"id"`
-	URL       string    `json:"url,omitempty"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
-	ETag      string    `json:"etag,omitempty"`
+	Source     string    `json:"source"`
+	ID         string    `json:"id"`
+	ProviderID string    `json:"provider_id,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	ETag       string    `json:"etag,omitempty"`
 }
 
 type Filter struct {

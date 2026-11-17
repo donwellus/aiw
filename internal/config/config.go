@@ -165,6 +165,16 @@ type SourceConfig struct {
 	FailedLabel  string `yaml:"failed_label"`
 	Comment      *bool  `yaml:"comment"`
 	CloseOnDone  *bool  `yaml:"close_on_done"`
+
+	Team         string   `yaml:"team"`
+	Project      string   `yaml:"project"`
+	APIKeyEnv    string   `yaml:"api_key_env"`
+	Endpoint     string   `yaml:"endpoint"`
+	States       []string `yaml:"states"`
+	RunningState string   `yaml:"running_state"`
+	DoneState    string   `yaml:"done_state"`
+	FailedState  string   `yaml:"failed_state"`
+	PendingState string   `yaml:"pending_state"`
 }
 
 func (s SourceConfig) WriteBackEnabled() bool {
@@ -527,6 +537,16 @@ sources:
   #   exclude_labels: [aiw:running, aiw:done, aiw:failed]
   #   comment: true
   #   close_on_done: false
+  # linear:
+  #   driver: linear
+  #   team: ENG
+  #   repo_path: ../app
+  #   states: [Todo, "In Progress"]
+  #   running_state: In Progress
+  #   done_state: Done
+  #   failed_state: Todo
+  #   pending_state: Todo
+  #   comment: true
 default_source: folder
 
 workspace:
