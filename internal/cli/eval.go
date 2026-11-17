@@ -54,12 +54,19 @@ func newEvalCommand(opts *rootOptions) *cobra.Command {
 					fmt.Fprintf(out, "%s\n", data)
 					continue
 				}
+				extras := ""
+				if result.JudgeScore != nil {
+					extras += fmt.Sprintf(" judge=%.1f", *result.JudgeScore)
+				}
+				if result.ReferenceSimilarity != nil {
+					extras += fmt.Sprintf(" ref=%.2f", *result.ReferenceSimilarity)
+				}
 				if result.Status == "passed" {
-					fmt.Fprintf(out, "[%s] ok pipeline=%s verify=%d custo=US$%.4f duracao=%s\n",
-						result.CaseID, result.PipelineStatus, result.VerifyExit, result.CostUSD, formatDuration(time.Duration(result.DurationMS)*time.Millisecond))
+					fmt.Fprintf(out, "[%s] ok pipeline=%s verify=%d custo=US$%.4f duracao=%s%s\n",
+						result.CaseID, result.PipelineStatus, result.VerifyExit, result.CostUSD, formatDuration(time.Duration(result.DurationMS)*time.Millisecond), extras)
 				} else {
-					fmt.Fprintf(out, "[%s] falhou pipeline=%s stage=%s verify=%d erro=%s\n",
-						result.CaseID, result.PipelineStatus, result.Stage, result.VerifyExit, oneLine(result.Error, 300))
+					fmt.Fprintf(out, "[%s] falhou pipeline=%s stage=%s verify=%d custo=US$%.4f erro=%s%s\n",
+						result.CaseID, result.PipelineStatus, result.Stage, result.VerifyExit, result.CostUSD, oneLine(result.Error, 300), extras)
 				}
 			}
 			summaryOut := out

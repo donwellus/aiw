@@ -59,6 +59,8 @@ Tarefa pronta para implementação.
 DECISION: READY
 RISK: LOW
 `}, nil
+	case "eval-judge":
+		return Result{Output: "SCORE: 9\n"}, nil
 	case "spec-validator":
 		if strings.Contains(strings.ToLower(req.Prompt), "validator-rejects") {
 			return Result{Output: "DECISION: REJECTED\nBLOCKING: falta critério verificável\n"}, nil

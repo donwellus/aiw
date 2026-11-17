@@ -216,20 +216,27 @@ Suite:
 name: meu-projeto
 engine: opencode          # opcional; pode vir do config ou --engine
 timeout: 30m
+judge:                    # opcional; score de 0 a 10
+  engine: claude
+  threshold: 7            # 0 = apenas informativo
+  rubric: "Correção, testes e escopo"
 cases:
   - id: fix-off-by-one
     task: tasks/001.md       # relativo à suite
     repo: fixtures/repo      # relativo à suite (git clone ou pasta simples)
     base_ref: main           # opcional
+    reference_ref: ref-solucao  # opcional; similaridade do diff
     verify: go test ./...
 ```
 
 - Cada caso roda em um clone/cópia temporário, com worktree e estado isolados; o repositório original não é tocado.
-- Métricas por caso: status do pipeline, verificação (`verify`), custo, duração, run/branch e artefatos copiados para o diretório de resultados.
+- Métricas por caso: status do pipeline, verificação (`verify`), custo, duração, run/branch, artefatos copiados, **score do judge** e **similaridade com `reference_ref`**.
 - `results.json` é gravado em `.aiw/evals/<timestamp>/` (ou `--out`); exit code 1 se qualquer caso falhar.
 - Telemetria fica `noop` nos evals para não poluir traces de produção.
 - `evals/smoke/suite.yaml` + `make eval-smoke` validam o harness com engine `fake`.
-- Evals são sequenciais nesta versão; não há LLM-as-judge nem comparação de diff de referência ainda — a verificação é o comando `verify`.
+- O judge usa o engine/modelo configurado (`judge.engine`/`judge.model`) e só bloqueia quando `judge.threshold > 0`.
+- Similaridade de referência é informativa (Jaccard das linhas alteradas), não bloqueia.
+- Evals são sequenciais nesta versão.
 
 ### Intake e gates automáticos
 
@@ -583,7 +590,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 ## Limitações atuais
 
 - Fontes `folder`, `github`, `linear`, `jira` e `trello`; MCP opcional para agentes; OAuth/webhooks ficam para depois.
-- Evals cobrem pipeline + comando de verificação; LLM-as-judge e comparação com diff de referência ainda não.
+- Evals cobrem pipeline + verify + judge opcional + similaridade de referência; execução paralela de casos ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.

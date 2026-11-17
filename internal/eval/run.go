@@ -4,20 +4,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/donwellus/aiw/internal/config"
+	"github.com/donwellus/aiw/internal/engine"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/sources"
 	"github.com/donwellus/aiw/internal/state"
+	"github.com/donwellus/aiw/prompts"
 )
 
 type Options struct {
@@ -43,6 +49,13 @@ type Result struct {
 	VerifyExit     int     `json:"verify_exit"`
 	VerifyOutput   string  `json:"verify_output,omitempty"`
 	Error          string  `json:"error,omitempty"`
+
+	ReferenceSimilarity *float64 `json:"reference_similarity,omitempty"`
+	ReferenceError      string   `json:"reference_error,omitempty"`
+	JudgeScore          *float64 `json:"judge_score,omitempty"`
+	JudgeThreshold      float64  `json:"judge_threshold,omitempty"`
+	JudgeOutput         string   `json:"judge_output,omitempty"`
+	JudgeError          string   `json:"judge_error,omitempty"`
 }
 
 type Summary struct {
@@ -182,6 +195,10 @@ func runCase(ctx context.Context, suite *Suite, testCase Case, options Options, 
 	}
 	task.RepoHint = repoPath
 	task.Source = "eval"
+	baseCommit := ""
+	if output, err := runCommand(ctx, repoPath, "git", "rev-parse", "HEAD"); err == nil {
+		baseCommit = strings.TrimSpace(output)
+	}
 
 	store, err := state.Open(cfg.StateDir())
 	if err != nil {
@@ -239,12 +256,46 @@ func runCase(ctx context.Context, suite *Suite, testCase Case, options Options, 
 			}
 		}
 	}
-	if outcome.Status == "succeeded" && result.VerifyExit == 0 && result.Error == "" {
+	if strings.TrimSpace(testCase.ReferenceRef) != "" && outcome.RunDir != "" && baseCommit != "" {
+		generated, _ := os.ReadFile(filepath.Join(outcome.RunDir, "diff.patch"))
+		reference, refErr := runCommand(ctx, repoPath, "git", "diff", baseCommit, testCase.ReferenceRef)
+		if refErr != nil {
+			result.ReferenceError = refErr.Error()
+		} else {
+			score := diffSimilarity(string(generated), reference)
+			result.ReferenceSimilarity = &score
+		}
+	}
+
+	judgeOK := true
+	if suite.Judge != nil {
+		result.JudgeThreshold = suite.Judge.Threshold
+		score, output, cost, judgeErr := runJudge(caseCtx, cfg, pipe, suite.Judge, task, outcome)
+		if judgeErr != nil {
+			result.JudgeError = judgeErr.Error()
+		} else {
+			result.JudgeScore = &score
+			result.JudgeOutput = truncate(output, 8000)
+			result.CostUSD += cost
+		}
+		if suite.Judge.Threshold > 0 {
+			judgeOK = result.JudgeScore != nil && *result.JudgeScore >= suite.Judge.Threshold
+			if !judgeOK && result.JudgeError == "" {
+				result.JudgeError = fmt.Sprintf("score abaixo do threshold %.1f", suite.Judge.Threshold)
+			}
+		}
+	}
+
+	if outcome.Status == "succeeded" && result.VerifyExit == 0 && result.Error == "" && judgeOK {
 		result.Status = "passed"
 	} else {
 		result.Status = "failed"
 		if result.Error == "" {
-			result.Error = "pipeline não concluiu: " + outcome.Status
+			if !judgeOK && result.JudgeError != "" {
+				result.Error = result.JudgeError
+			} else {
+				result.Error = "pipeline não concluiu: " + outcome.Status
+			}
 		}
 	}
 
@@ -413,4 +464,101 @@ func truncate(value string, max int) string {
 		return value
 	}
 	return value[:max] + "...(truncado)"
+}
+
+var judgeScorePattern = regexp.MustCompile(`(?im)^\s*SCORE:\s*([0-9]+(?:\.[0-9]+)?)\s*$`)
+
+type judgePromptData struct {
+	TaskTitle       string
+	TaskDescription string
+	Rubric          string
+	Spec            string
+	Diff            string
+}
+
+func runJudge(ctx context.Context, cfg *config.Config, pipe *pipeline.Pipeline, judge *JudgeConfig, task *source.Task, outcome runner.Outcome) (float64, string, float64, error) {
+	if outcome.Worktree == "" {
+		return 0, "", 0, errors.New("worktree ausente para o judge")
+	}
+	spec, _ := os.ReadFile(filepath.Join(outcome.RunDir, "spec.md"))
+	diff, _ := os.ReadFile(filepath.Join(outcome.RunDir, "diff.patch"))
+	raw, err := prompts.FS.ReadFile("eval-judge.md")
+	if err != nil {
+		return 0, "", 0, err
+	}
+	tmpl, err := template.New("eval-judge").Option("missingkey=zero").Parse(string(raw))
+	if err != nil {
+		return 0, "", 0, err
+	}
+	var promptBuffer bytes.Buffer
+	if err := tmpl.Execute(&promptBuffer, judgePromptData{
+		TaskTitle:       task.Title,
+		TaskDescription: task.Description,
+		Rubric:          judge.Rubric,
+		Spec:            truncate(string(spec), 40000),
+		Diff:            truncate(string(diff), 40000),
+	}); err != nil {
+		return 0, "", 0, err
+	}
+	engineName := judge.Engine
+	if engineName == "" {
+		engineName = cfg.Defaults.Engine
+	}
+	eng, err := pipe.Engines.Get(engineName)
+	if err != nil {
+		return 0, "", 0, err
+	}
+	result, err := eng.Run(ctx, engine.Request{
+		Stage:   "eval-judge",
+		Prompt:  promptBuffer.String(),
+		Workdir: outcome.Worktree,
+		Model:   judge.Model,
+		Timeout: cfg.Defaults.Timeout.Std(),
+	})
+	if err != nil {
+		return 0, result.Output, result.Usage.CostUSD, err
+	}
+	matches := judgeScorePattern.FindAllStringSubmatch(result.Output, -1)
+	if len(matches) == 0 {
+		return 0, result.Output, result.Usage.CostUSD, errors.New("judge não retornou SCORE")
+	}
+	score, err := strconv.ParseFloat(matches[len(matches)-1][1], 64)
+	if err != nil {
+		return 0, result.Output, result.Usage.CostUSD, err
+	}
+	return score, result.Output, result.Usage.CostUSD, nil
+}
+
+func diffSimilarity(generated, reference string) float64 {
+	gen := changedLines(generated)
+	ref := changedLines(reference)
+	if len(gen) == 0 && len(ref) == 0 {
+		return 1
+	}
+	intersection := 0
+	for line := range gen {
+		if _, ok := ref[line]; ok {
+			intersection++
+		}
+	}
+	union := len(gen) + len(ref) - intersection
+	if union == 0 {
+		return 1
+	}
+	return float64(intersection) / float64(union)
+}
+
+func changedLines(diff string) map[string]struct{} {
+	lines := map[string]struct{}{}
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"),
+			strings.HasPrefix(line, "@@"), strings.HasPrefix(line, "diff "),
+			strings.HasPrefix(line, "index "):
+			continue
+		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, "-"):
+			lines[strings.TrimSpace(line)] = struct{}{}
+		}
+	}
+	return lines
 }

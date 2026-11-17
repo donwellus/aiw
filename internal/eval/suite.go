@@ -16,19 +16,28 @@ type Suite struct {
 	Name    string          `yaml:"name"`
 	Engine  string          `yaml:"engine"`
 	Timeout config.Duration `yaml:"timeout"`
+	Judge   *JudgeConfig    `yaml:"judge"`
 	Cases   []Case          `yaml:"cases"`
 	Path    string          `yaml:"-"`
 	Dir     string          `yaml:"-"`
 }
 
+type JudgeConfig struct {
+	Engine    string  `yaml:"engine"`
+	Model     string  `yaml:"model"`
+	Threshold float64 `yaml:"threshold"`
+	Rubric    string  `yaml:"rubric"`
+}
+
 type Case struct {
-	ID      string          `yaml:"id"`
-	Task    string          `yaml:"task"`
-	Repo    string          `yaml:"repo"`
-	BaseRef string          `yaml:"base_ref"`
-	Verify  string          `yaml:"verify"`
-	Engine  string          `yaml:"engine"`
-	Timeout config.Duration `yaml:"timeout"`
+	ID           string          `yaml:"id"`
+	Task         string          `yaml:"task"`
+	Repo         string          `yaml:"repo"`
+	BaseRef      string          `yaml:"base_ref"`
+	ReferenceRef string          `yaml:"reference_ref"`
+	Verify       string          `yaml:"verify"`
+	Engine       string          `yaml:"engine"`
+	Timeout      config.Duration `yaml:"timeout"`
 }
 
 func Load(path string) (*Suite, error) {

@@ -69,6 +69,10 @@ Descrição suficientemente longa para o intake e o pipeline fake executarem.
 	if err := os.WriteFile(suitePath, []byte(`name: test
 engine: fake
 timeout: 1m
+judge:
+  engine: fake
+  threshold: 7
+  rubric: "A mudança deve cumprir a tarefa."
 cases:
   - id: fake
     task: tasks/001.md
@@ -100,10 +104,28 @@ cases:
 	if results[0].Status != "passed" || results[0].VerifyExit != 0 {
 		t.Fatalf("resultado inesperado: %+v", results[0])
 	}
+	if results[0].JudgeScore == nil || *results[0].JudgeScore != 9 {
+		t.Fatalf("judge inesperado: %+v", results[0])
+	}
 	if _, err := os.Stat(filepath.Join(outDir, "results.json")); err != nil {
 		t.Fatalf("results.json ausente: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(results[0].ArtifactsDir, "diff.patch")); err != nil {
 		t.Fatalf("artefatos não copiados: %v", err)
+	}
+}
+
+func TestDiffSimilarity(t *testing.T) {
+	a := "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+	if score := diffSimilarity(a, a); score != 1 {
+		t.Fatalf("score = %v", score)
+	}
+	b := "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+other\n"
+	score := diffSimilarity(a, b)
+	if score <= 0 || score >= 1 {
+		t.Fatalf("score deveria ser parcial: %v", score)
+	}
+	if score := diffSimilarity("", ""); score != 1 {
+		t.Fatalf("vazio = %v", score)
 	}
 }

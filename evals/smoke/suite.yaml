@@ -1,6 +1,10 @@
 name: smoke
 engine: fake
 timeout: 2m
+judge:
+  engine: fake
+  threshold: 7
+  rubric: "A mudança deve cumprir a tarefa."
 cases:
   - id: fake-change
     task: tasks/001.md
