@@ -148,6 +148,20 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		return out
 	}
 
+	var src source.Source
+	if !req.Options.DisableWriteBack {
+		if opened, err := r.pipe.Sources.Open(req.Task.Source); err == nil {
+			src = opened
+			if writer, ok := src.(source.StatusWriter); ok {
+				if err := writer.MarkRunning(ctx, req.Ref, runID); err != nil {
+					r.pipe.Log.Warn("falha ao marcar tarefa em execução na fonte", "task", req.Task.ExternalID, "error", err)
+				}
+			}
+		} else {
+			r.pipe.Log.Warn("fonte indisponível para write-back", "source", req.Task.Source, "error", err)
+		}
+	}
+
 	pipe := r.pipe.WithLogger(r.pipe.Log.With("task", req.Task.ExternalID, "run_id", runID))
 	req.Options.RunID = runID
 	result, runErr := pipe.Run(ctx, req.Task, req.Ref, req.Repo, req.Options)
@@ -199,6 +213,23 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		r.pipe.Log.Warn("falha ao salvar estado da tarefa", "task", req.Task.ExternalID, "error", err)
 		if out.Err == nil {
 			out.Err = err
+		}
+	}
+
+	if src != nil {
+		switch out.Status {
+		case "needs_input", "canceled":
+			if pending, ok := src.(source.PendingWriter); ok {
+				if err := pending.MarkPending(ctx, req.Ref); err != nil {
+					r.pipe.Log.Warn("falha ao devolver tarefa ao inbox", "task", req.Task.ExternalID, "error", err)
+				}
+			}
+		case "failed":
+			if writer, ok := src.(source.StatusWriter); ok {
+				if err := writer.MarkFailed(ctx, req.Ref, runErr); err != nil {
+					r.pipe.Log.Warn("falha ao mover tarefa para failed", "task", req.Task.ExternalID, "error", err)
+				}
+			}
 		}
 	}
 	return out

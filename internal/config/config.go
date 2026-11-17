@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/donwellus/aiw/internal/source"
 )
 
 type Duration time.Duration
@@ -147,6 +149,7 @@ func (t TelemetryConfig) RedactEnabled() bool {
 type SourceConfig struct {
 	Driver        string   `yaml:"driver"`
 	Path          string   `yaml:"path"`
+	DoingDir      string   `yaml:"doing_dir"`
 	DoneDir       string   `yaml:"done_dir"`
 	FailedDir     string   `yaml:"failed_dir"`
 	Labels        []string `yaml:"labels"`
@@ -489,6 +492,7 @@ sources:
   folder:
     driver: folder
     path: ./tasks
+    # doing_dir: ./tasks/doing   # opcional: visibilidade/claim por rename
     done_dir: ./tasks/done
     failed_dir: ./tasks/failed
 default_source: folder
@@ -521,4 +525,27 @@ func WriteDefault(root string, force bool) (string, error) {
 		return path, err
 	}
 	return path, nil
+}
+
+func (c *Config) ResolveRepo(task *source.Task, override string) string {
+	if override != "" {
+		return c.ResolvePath(override)
+	}
+	if task != nil && strings.TrimSpace(task.RepoHint) != "" {
+		return c.ResolvePath(task.RepoHint)
+	}
+	if task != nil {
+		for _, label := range task.Labels {
+			if strings.HasPrefix(strings.ToLower(label), "repo:") {
+				name := strings.TrimPrefix(label, "repo:")
+				if mapped, ok := c.Workspace.RepoMap[name]; ok {
+					return c.ResolvePath(mapped)
+				}
+			}
+		}
+	}
+	if c.Workspace.DefaultRepo != "" {
+		return c.ResolvePath(c.Workspace.DefaultRepo)
+	}
+	return ""
 }

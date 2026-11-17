@@ -78,7 +78,7 @@ chmod +x "$SLOW"
 
 new_project() {
   local dir="$1"
-  mkdir -p "$dir/tasks/done" "$dir/tasks/failed" "$dir/.aiw"
+  mkdir -p "$dir/tasks/doing" "$dir/tasks/done" "$dir/tasks/failed" "$dir/.aiw"
   git -C "$dir" init -q -b main
   git -C "$dir" config user.email verify@example.com
   git -C "$dir" config user.name verify
@@ -106,6 +106,7 @@ sources:
   folder:
     driver: folder
     path: ./tasks
+    doing_dir: ./tasks/doing
     done_dir: ./tasks/done
     failed_dir: ./tasks/failed
 default_source: folder
@@ -167,6 +168,8 @@ CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' 
 RUNNING=$( { grep -l '"status": "running"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null || true; } | wc -l | tr -d ' ')
 BRANCHES=$(git -C "$DIR" branch --list 'aiw/*' | wc -l | tr -d ' ')
 WORKTREES=$(find "$DIR/.aiw/worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
 
 assert_eq "$RUNS" 8 "runs criadas (exactly-once)"
 assert_eq "$DONE" 8 "tarefas em done"
@@ -174,6 +177,8 @@ assert_eq "$CLAIMS" 0 "claims remanescentes"
 assert_eq "$RUNNING" 0 "estados running remanescentes"
 assert_eq "$BRANCHES" 8 "branches aiw/*"
 assert_eq "$WORKTREES" 8 "worktrees"
+assert_eq "$DOING" 0 "pasta doing vazia"
+assert_eq "$INBOX" 0 "inbox vazio"
 
 for name in intake.md spec.md spec-review.md plan.md plan-review.md implement.md test.log diff.patch review.md; do
   COUNT=$(find "$DIR/.aiw/runs" -name "$name" | wc -l | tr -d ' ')
@@ -237,9 +242,13 @@ FAILED=$(grep -c '"status":"failed"' "$DIR/out.jsonl" || true)
 assert_eq "$SUCCEEDED" 2 "sucessos com falha isolada"
 assert_eq "$FAILED" 1 "falhas com falha isolada"
 DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+FAILED_FILES=$(find "$DIR/tasks/failed" -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
 CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
 FAILED_STATE=$( { grep -l '"status": "failed"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null || true; } | wc -l | tr -d ' ')
 assert_eq "$DONE" 2 "tarefas boas em done"
+assert_eq "$FAILED_FILES" 1 "tarefa ruim em failed"
+assert_eq "$DOING" 0 "doing vazio após falha"
 assert_eq "$CLAIMS" 0 "claims após falha"
 assert_eq "$FAILED_STATE" 1 "estado failed registrado"
 pass "falha isolada: 2 concluídas, 1 falhou, claims liberados"
@@ -265,9 +274,13 @@ fi
 CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
 RUNNING=$( { grep -l '"status": "running"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null || true; } | wc -l | tr -d ' ')
 DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
 assert_eq "$CLAIMS" 0 "claims após cancelamento"
 assert_eq "$RUNNING" 0 "estados running após cancelamento"
 assert_eq "$DONE" 0 "tarefas em done após cancelamento"
+assert_eq "$DOING" 0 "doing vazio após cancelamento"
+assert_eq "$INBOX" 2 "tarefas devolvidas ao inbox após cancelamento"
 
 export AIW_SLOW_SECONDS=0.1
 "$AIW" --root "$DIR" work --workers 2 --auto --json >"$DIR/out-retry.jsonl" 2>"$DIR/err-retry.log"
@@ -301,9 +314,13 @@ SUCCEEDED=$(grep -c '"status":"succeeded"' "$DIR/out.jsonl" || true)
 DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
 CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
 RUN_DIR=$(find "$DIR/.aiw/runs" -mindepth 1 -maxdepth 1 -type d | head -1)
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
 assert_eq "$NEEDS" 1 "tarefa marcada needs_input"
 assert_eq "$SUCCEEDED" 0 "nenhuma tarefa concluída com input faltando"
 assert_eq "$DONE" 0 "nada em done com input faltando"
+assert_eq "$DOING" 0 "doing vazio com needs_input"
+assert_eq "$INBOX" 1 "tarefa devolvida ao inbox com needs_input"
 assert_eq "$CLAIMS" 0 "claims após needs_input"
 [ -f "$RUN_DIR/questions.md" ] || fail "questions.md não foi criado"
 
@@ -327,5 +344,93 @@ assert_eq "$SUCCEEDED" 1 "tarefa reprocessada após editar"
 assert_eq "$DONE" 1 "tarefa em done após editar"
 assert_eq "$CLAIMS" 0 "claims após reprocessamento"
 pass "intake: needs_input, perguntas e reprocessamento após edição"
+
+# 5) Daemon: um ciclo batch contínuo com o mesmo pool.
+DIR="$WORK/daemon"
+new_project "$DIR"
+write_task "$DIR" "daemon-a" "Tarefa do daemon A"
+write_task "$DIR" "daemon-b" "Tarefa do daemon B"
+
+export AIW_SLOW_SECONDS=0.1
+"$AIW" --root "$DIR" daemon --once --workers 2 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+SUCCEEDED=$(grep -c '"status":"succeeded"' "$DIR/out.jsonl" || true)
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$SUCCEEDED" 2 "sucessos no daemon"
+assert_eq "$DONE" 2 "tarefas em done pelo daemon"
+assert_eq "$DOING" 0 "doing vazio após daemon"
+assert_eq "$CLAIMS" 0 "claims após daemon"
+pass "daemon: ciclo batch, pool e write-back"
+
+# 6) Daemon: endpoints /healthz e /status.
+DIR="$WORK/status"
+new_project "$DIR"
+"$AIW" --root "$DIR" daemon --interval 1h --status-addr 127.0.0.1:0 >"$DIR/out.log" 2>"$DIR/err.log" &
+PID=$!
+ADDR=""
+for i in $(seq 1 50); do
+  ADDR=$(grep -o 'http://[^/]*' "$DIR/out.log" 2>/dev/null | head -1 || true)
+  [ -n "$ADDR" ] && break
+  sleep 0.1
+done
+[ -n "$ADDR" ] || fail "daemon não publicou o endereço de status"
+HEALTH=$(curl -fsS "$ADDR/healthz" || true)
+assert_eq "$HEALTH" "ok" "healthz do daemon"
+curl -fsS "$ADDR/status" >"$DIR/status.json"
+python3 - "$DIR/status.json" <<'PYSTATUS'
+import json
+import sys
+status = json.load(open(sys.argv[1]))
+assert status["workers"] >= 1, status
+assert status["interval"] == "1h0m0s", status
+assert "cycles" in status and "claims" in status, status
+PYSTATUS
+kill -INT "$PID"
+wait "$PID"
+pass "daemon: /healthz e /status"
+
+# 7) Release: devolve tarefa pausada em doing para o inbox.
+DIR="$WORK/release"
+new_project "$DIR"
+write_task "$DIR" "release-a" "Tarefa pausada"
+
+python3 - "$DIR" <<'PYCONF'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1]) / ".aiw/config.yaml"
+text = path.read_text().replace("    spec: false", "    spec: human")
+path.write_text(text)
+PYCONF
+
+export AIW_SLOW_SECONDS=0.1
+"$AIW" --root "$DIR" work --workers 1 --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
+assert_eq "$PAUSED" 1 "tarefa pausada no gate spec"
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+assert_eq "$DOING" 1 "tarefa pausada permanece em doing"
+RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+runs = pathlib.Path(sys.argv[1]) / ".aiw/runs"
+for path in runs.glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data["status"] == "paused":
+        print(data["id"])
+        break
+PYRUN
+)
+[ -n "$RUN_ID" ] || fail "run pausada não encontrada"
+"$AIW" --root "$DIR" release "$RUN_ID" >"$DIR/release.log" 2>&1
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+TODO=$(grep -l '"status": "todo"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "$INBOX" 1 "tarefa devolvida ao inbox"
+assert_eq "$DOING" 0 "doing vazio após release"
+assert_eq "$CLAIMS" 0 "claims após release"
+assert_eq "$TODO" 1 "estado todo após release"
+pass "release: pausada em doing devolvida ao inbox"
 
 echo "verify ok"

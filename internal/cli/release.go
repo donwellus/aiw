@@ -1,10 +1,14 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/pipeline"
+	"github.com/donwellus/aiw/internal/source"
+	"github.com/donwellus/aiw/internal/sources"
 	"github.com/donwellus/aiw/internal/state"
 )
 
@@ -24,6 +28,7 @@ func newReleaseCommand(opts *rootOptions) *cobra.Command {
 			}
 			runID := args[0]
 			record, recordFound := store.FindByRunID(runID)
+			run, runErr := pipeline.LoadRun(cfg, runID)
 			claim, claimFound, err := store.ReleaseClaimByRunID(runID)
 			if err != nil {
 				return err
@@ -41,6 +46,29 @@ func newReleaseCommand(opts *rootOptions) *cobra.Command {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "tarefa %s:%s marcada como todo\n", record.Source, record.ID)
+			}
+
+			sourceName := ""
+			ref := source.Ref{}
+			if runErr == nil {
+				sourceName = run.Source
+				ref = run.Ref
+			}
+			if sourceName == "" && claimFound {
+				sourceName = claim.Source
+				ref = source.Ref{Source: claim.Source, ID: claim.ID}
+			}
+			if sourceName != "" {
+				src, err := sources.NewRegistry(cfg).Open(sourceName)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: fonte indisponível para devolver tarefa: %v\n", err)
+				} else if releaser, ok := src.(source.Releaser); ok {
+					if err := releaser.Release(context.Background(), ref); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "aviso: falha ao devolver tarefa ao inbox: %v\n", err)
+					} else {
+						fmt.Fprintln(cmd.OutOrStdout(), "tarefa devolvida ao inbox")
+					}
+				}
 			}
 			return nil
 		},

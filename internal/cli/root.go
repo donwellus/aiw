@@ -42,6 +42,7 @@ func NewRoot() *cobra.Command {
 		newListCommand(opts),
 		newRunCommand(opts),
 		newWorkCommand(opts),
+		newDaemonCommand(opts),
 		newReleaseCommand(opts),
 		newIntakeCommand(opts),
 		newRunsCommand(opts),
@@ -180,24 +181,7 @@ func resolveTask(ctx context.Context, cfg *config.Config, sourceName, taskArg st
 }
 
 func resolveRepo(cfg *config.Config, task *source.Task, repoFlag string) string {
-	if repoFlag != "" {
-		return cfg.ResolvePath(repoFlag)
-	}
-	if strings.TrimSpace(task.RepoHint) != "" {
-		return cfg.ResolvePath(task.RepoHint)
-	}
-	for _, label := range task.Labels {
-		if strings.HasPrefix(strings.ToLower(label), "repo:") {
-			name := strings.TrimPrefix(label, "repo:")
-			if mapped, ok := cfg.Workspace.RepoMap[name]; ok {
-				return cfg.ResolvePath(mapped)
-			}
-		}
-	}
-	if cfg.Workspace.DefaultRepo != "" {
-		return cfg.ResolvePath(cfg.Workspace.DefaultRepo)
-	}
-	return ""
+	return cfg.ResolveRepo(task, repoFlag)
 }
 
 func queueFileName(sourceName, id string) string {

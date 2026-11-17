@@ -153,3 +153,63 @@ func TestWriteBackDisabled(t *testing.T) {
 func boolPtr(value bool) *bool {
 	return &value
 }
+
+func TestDoingLifecycle(t *testing.T) {
+	root, base := newFixture(t)
+	cfg := base.cfg
+	cfg.DoingDir = "./tasks/doing"
+	driver, err := New("folder", root, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	ref := source.Ref{Source: "folder", URL: filepath.Join(root, "tasks", "001.md")}
+	if err := driver.MarkRunning(ctx, ref, "run-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "doing", "001.md")); err != nil {
+		t.Fatalf("tarefa não foi movida para doing: %v", err)
+	}
+	refs, err := driver.List(ctx, source.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 1 || refs[0].ID != "002" {
+		t.Fatalf("doing deveria ser ignorado pelo List: %+v", refs)
+	}
+
+	if err := driver.MarkPending(ctx, ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "001.md")); err != nil {
+		t.Fatalf("tarefa não voltou ao inbox: %v", err)
+	}
+
+	if err := driver.MarkRunning(ctx, ref, "run-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.MarkDone(ctx, ref, source.RunResult{RunID: "run-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "done", "001.md")); err != nil {
+		t.Fatalf("tarefa não foi para done: %v", err)
+	}
+
+	ref2 := source.Ref{Source: "folder", URL: filepath.Join(root, "tasks", "002.md")}
+	if err := driver.MarkRunning(ctx, ref2, "run-3"); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.MarkFailed(ctx, ref2, os.ErrDeadlineExceeded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "failed", "002.md")); err != nil {
+		t.Fatalf("tarefa não foi para failed: %v", err)
+	}
+	leftovers, err := os.ReadDir(filepath.Join(root, "tasks", "doing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("doing deveria estar vazio: %v", leftovers)
+	}
+}

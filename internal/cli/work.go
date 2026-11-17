@@ -87,7 +87,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			refs, err := src.List(ctx, filter)
+			candidates, skips, err := run.Collect(ctx, src, filter, repoFlag, force, maxTasks)
 			if err != nil {
 				return err
 			}
@@ -95,48 +95,18 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 			out := cmd.OutOrStdout()
 			failures := 0
 			canceled := 0
-			jobs := make([]runner.Job, 0, len(refs))
-			for _, ref := range refs {
-				task, err := src.Fetch(ctx, ref)
-				if err != nil {
-					if errors.Is(err, os.ErrNotExist) {
-						fmt.Fprintf(out, "[%s] ignorada: removida da fonte durante a listagem\n", ref.ID)
-						continue
-					}
-					return fmt.Errorf("buscando %s: %w", ref.ID, err)
-				}
-				repo := resolveRepo(cfg, task, repoFlag)
-				if repo == "" {
-					if err := store.Put(state.TaskRecord{
-						Source:      task.Source,
-						ID:          task.ExternalID,
-						Status:      "failed",
-						ContentHash: task.ContentHash,
-					}); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
-					}
+			for _, skip := range skips {
+				if skip.Status == "failed" {
 					failures++
-					printWorkOutcome(out, asJSON, runner.Outcome{
-						TaskID: task.ExternalID,
-						Title:  task.Title,
-						Status: "failed",
-						Err:    errors.New("repositório não resolvido"),
-					})
-					continue
 				}
-				if !force {
-					if outcome, skip := run.Check(task, false); skip {
-						printWorkOutcome(out, asJSON, outcome)
-						continue
-					}
-				}
-				if maxTasks > 0 && len(jobs) >= maxTasks {
-					continue
-				}
+				printWorkOutcome(out, asJSON, skip)
+			}
+			jobs := make([]runner.Job, 0, len(candidates))
+			for _, candidate := range candidates {
 				jobs = append(jobs, runner.Job{
-					Task:  task,
-					Ref:   ref,
-					Repo:  repo,
+					Task:  candidate.Task,
+					Ref:   candidate.Ref,
+					Repo:  candidate.Repo,
 					Force: force,
 					Options: pipeline.Options{
 						AutoApprove:      auto,

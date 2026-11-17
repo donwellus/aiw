@@ -79,6 +79,14 @@ type StatusWriter interface {
 	MarkFailed(ctx context.Context, ref Ref, runErr error) error
 }
 
+type PendingWriter interface {
+	MarkPending(ctx context.Context, ref Ref) error
+}
+
+type Releaser interface {
+	Release(ctx context.Context, ref Ref) error
+}
+
 type Commenter interface {
 	Comment(ctx context.Context, ref Ref, body string) error
 }

@@ -33,6 +33,7 @@ type Driver struct {
 	name   string
 	cfg    config.SourceConfig
 	base   string
+	doing  string
 	done   string
 	failed string
 }
@@ -46,6 +47,7 @@ func New(name, root string, cfg config.SourceConfig) (*Driver, error) {
 		name:   name,
 		cfg:    cfg,
 		base:   base,
+		doing:  resolve(root, cfg.DoingDir),
 		done:   resolve(root, cfg.DoneDir),
 		failed: resolve(root, cfg.FailedDir),
 	}, nil
@@ -82,7 +84,7 @@ func (d *Driver) List(ctx context.Context, f source.Filter) ([]source.Ref, error
 			if path == d.base {
 				return nil
 			}
-			if entry.Name() == ".git" || samePath(path, d.done) || samePath(path, d.failed) {
+			if entry.Name() == ".git" || samePath(path, d.doing) || samePath(path, d.done) || samePath(path, d.failed) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -139,29 +141,127 @@ func (d *Driver) Fetch(ctx context.Context, ref source.Ref) (*source.Task, error
 }
 
 func (d *Driver) MarkRunning(ctx context.Context, ref source.Ref, runID string) error {
-	return nil
+	if !d.cfg.WriteBackEnabled() || d.doing == "" {
+		return nil
+	}
+	src, err := d.sourceIn(ref, d.base)
+	if err != nil || src == "" {
+		return err
+	}
+	return moveFile(src, d.doing)
 }
 
 func (d *Driver) MarkDone(ctx context.Context, ref source.Ref, result source.RunResult) error {
 	if !d.cfg.WriteBackEnabled() {
 		return nil
 	}
-	return d.move(ref, d.done)
+	src, err := d.locate(ref)
+	if err != nil || src == "" {
+		return err
+	}
+	return moveFile(src, d.done)
 }
 
 func (d *Driver) MarkFailed(ctx context.Context, ref source.Ref, runErr error) error {
 	if !d.cfg.WriteBackEnabled() {
 		return nil
 	}
-	return d.move(ref, d.failed)
+	src, err := d.locate(ref)
+	if err != nil || src == "" {
+		return err
+	}
+	return moveFile(src, d.failed)
 }
 
-func (d *Driver) move(ref source.Ref, destDir string) error {
-	if destDir == "" {
+func (d *Driver) MarkPending(ctx context.Context, ref source.Ref) error {
+	if !d.cfg.WriteBackEnabled() || d.doing == "" {
 		return nil
 	}
-	src := ref.URL
-	if src == "" {
+	src, err := d.locate(ref)
+	if err != nil || src == "" {
+		return err
+	}
+	return moveFile(src, d.base)
+}
+
+func (d *Driver) Release(ctx context.Context, ref source.Ref) error {
+	return d.MarkPending(ctx, ref)
+}
+
+func (d *Driver) locate(ref source.Ref) (string, error) {
+	if ref.URL != "" {
+		if _, err := os.Stat(ref.URL); err == nil {
+			return ref.URL, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if d.doing != "" {
+			candidate := filepath.Join(d.doing, filepath.Base(ref.URL))
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
+		}
+	}
+	for _, dir := range []string{d.doing, d.base} {
+		if dir == "" {
+			continue
+		}
+		if path := findByID(dir, ref.ID); path != "" {
+			return path, nil
+		}
+	}
+	return "", nil
+}
+
+func (d *Driver) sourceIn(ref source.Ref, dir string) (string, error) {
+	if ref.URL != "" && filepath.Clean(filepath.Dir(ref.URL)) == filepath.Clean(dir) {
+		if _, err := os.Stat(ref.URL); err == nil {
+			return ref.URL, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	if ref.URL != "" {
+		candidate := filepath.Join(dir, filepath.Base(ref.URL))
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	if path := findByID(dir, ref.ID); path != "" {
+		return path, nil
+	}
+	return "", nil
+}
+
+func findByID(dir, id string) string {
+	if id == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".md") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		task, err := ParseFile(path)
+		if err != nil {
+			continue
+		}
+		if task.ExternalID == id || task.ExternalID == strings.TrimSuffix(id, filepath.Ext(id)) {
+			return path
+		}
+	}
+	return ""
+}
+
+func moveFile(src, destDir string) error {
+	if src == "" || destDir == "" {
+		return nil
+	}
+	if filepath.Clean(filepath.Dir(src)) == filepath.Clean(destDir) {
 		return nil
 	}
 	if _, err := os.Stat(src); err != nil {
@@ -177,7 +277,7 @@ func (d *Driver) move(ref source.Ref, destDir string) error {
 	dest := filepath.Join(destDir, name)
 	if _, err := os.Stat(dest); err == nil {
 		base := strings.TrimSuffix(name, filepath.Ext(name))
-		dest = filepath.Join(destDir, fmt.Sprintf("%s-%d%s", base, time.Now().Unix(), filepath.Ext(name)))
+		dest = filepath.Join(destDir, fmt.Sprintf("%s-%d%s", base, time.Now().UnixNano(), filepath.Ext(name)))
 	}
 	if err := os.Rename(src, dest); err == nil {
 		return nil

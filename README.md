@@ -142,6 +142,7 @@ aiw resume <run-id>
 | `aiw list [--eligible] [--status] [--json]` | lista tarefas e seus status locais |
 | `aiw run --task <path\|source:id>` | executa o pipeline para uma tarefa |
 | `aiw work --workers N [--auto]` | processa tarefas elegíveis em paralelo |
+| `aiw daemon [--interval 60s]` | processa continuamente em intervalos |
 | `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
@@ -170,7 +171,35 @@ aiw release <run-id>
 - Ctrl+C para de enfileirar, cancela runs em andamento, libera claims e devolve tarefas canceladas para `todo`.
 - `aiw release` serve para runs que morreram sem liberar o claim/estado.
 
-Limitações atuais do pool: `tasks/` é local ao clone; o daemon (`aiw daemon`) com polling e a pasta `doing` opcional ficam para a próxima fase.
+Limitações atuais do pool: `tasks/` é local ao clone; conectores remotos e evals são os próximos marcos.
+
+### Daemon (`aiw daemon`)
+
+```bash
+aiw daemon --workers 2 --interval 60s
+aiw daemon --once --workers 2 --auto          # um ciclo, útil para cron/testes
+aiw daemon --status-addr 127.0.0.1:8787       # /healthz e /status em JSON
+```
+
+- Faz polling da fonte a cada `--interval`, coleta tarefas elegíveis e usa o mesmo pool/claim do `aiw work`.
+- Sem resumo global fixo: imprime uma linha por tarefa concluída e uma linha por ciclo quando há trabalho.
+- `/status` traz um resumo vivo (ciclos, totais por status, runs em andamento, claims); `/healthz` responde `ok`.
+- Nunca abre prompt; gates humanos pausam a tarefa e liberam o slot.
+- SIGINT/SIGTERM encerra o ciclo, cancela runs em andamento, libera claims e devolve tarefas canceladas ao inbox.
+- Tarefas `paused`/`needs_input` ficam fora da fila até `resume` ou mudança de conteúdo.
+
+### Pasta doing opcional
+
+```yaml
+sources:
+  folder:
+    doing_dir: ./tasks/doing
+```
+
+- Se configurada, a tarefa é movida atomicamente para `doing/` no claim, dando visibilidade e um claim por rename.
+- `paused` permanece em `doing`; `needs_input`/cancelado voltam ao inbox; `done`/`failed` vão para as pastas finais.
+- `aiw release <run-id>` libera claim/estado e devolve a tarefa ao inbox.
+- Sem `doing_dir` (default), o claim atômico em `.aiw/state/claims` continua valendo.
 
 ### Intake e gates automáticos
 
@@ -231,6 +260,7 @@ sources:
   folder:
     driver: folder
     path: ./tasks
+    # doing_dir: ./tasks/doing   # opcional: visibilidade/claim por rename
     done_dir: ./tasks/done
     failed_dir: ./tasks/failed
 
@@ -357,7 +387,7 @@ docs/adr             decisões de arquitetura
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 
-O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento e o ciclo `needs_input` → edição → reprocessamento.
+O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing` e um ciclo do daemon.
 
 ## Licença
 
@@ -370,6 +400,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - Fonte apenas `folder`; conectores remotos são o próximo passo (GitHub → Linear → Jira → Trello).
 - Evals ainda em tests de integração; a suíte `aiw eval` com tarefas golden é o próximo marco.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) virão nas próximas fases.
-- Daemon contínuo (`aiw daemon`) e pasta `doing` opcional são o próximo passo.
+- Conectores remotos (GitHub/Linear/Jira/Trello) e evals (`aiw eval`) são os próximos passos.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.
+- Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.
