@@ -28,6 +28,7 @@ import (
 var ErrPaused = errors.New("run pausada aguardando aprovação")
 
 type Options struct {
+	RunID            string
 	AutoApprove      bool
 	EngineOverride   string
 	BudgetUSD        float64
@@ -38,20 +39,22 @@ type Options struct {
 type Result struct {
 	RunID    string
 	Status   string
+	Stage    string
 	RunDir   string
 	Worktree string
 	Branch   string
 	PRURL    string
 	Summary  string
+	Usage    engine.Usage
 }
 
 type Pipeline struct {
-	Cfg         *config.Config
-	Sources     *sources.Registry
-	Engines     *engine.Registry
-	Telemetry   telemetry.Client
-	Log         *slog.Logger
-	AutoApprove bool
+	Cfg       *config.Config
+	Sources   *sources.Registry
+	Engines   *engine.Registry
+	Telemetry telemetry.Client
+	Log       *slog.Logger
+	Limiter   *engine.Limiter
 }
 
 func New(cfg *config.Config) *Pipeline {
@@ -61,7 +64,18 @@ func New(cfg *config.Config) *Pipeline {
 		Engines:   engine.NewRegistry(cfg),
 		Telemetry: telemetry.New(cfg.Telemetry),
 		Log:       slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		Limiter:   engine.NewLimiter(),
 	}
+}
+
+func (p *Pipeline) WithLogger(logger *slog.Logger) *Pipeline {
+	clone := *p
+	clone.Log = logger
+	return &clone
+}
+
+func (p *Pipeline) NewRunID(task *source.Task) string {
+	return p.newRunID(task)
 }
 
 func (p *Pipeline) Run(ctx context.Context, task *source.Task, ref source.Ref, repo string, opts Options) (*Result, error) {
@@ -79,7 +93,10 @@ func (p *Pipeline) Run(ctx context.Context, task *source.Task, ref source.Ref, r
 		return nil, fmt.Errorf("repositório %s inacessível: %w", repoAbs, err)
 	}
 
-	runID := p.newRunID(task)
+	runID := opts.RunID
+	if runID == "" {
+		runID = p.newRunID(task)
+	}
 	run := newRunState(runID, task, ref, task.Source, repoAbs)
 	run.EngineOverride = opts.EngineOverride
 	dir := p.runDir(run)
@@ -184,6 +201,13 @@ func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options)
 			res := p.result(run, "pausada")
 			return res, runErr
 		}
+		if errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			run.Status = "canceled"
+			run.Error = runErr.Error()
+			p.save(run, dir)
+			appendEvent(dir, "run.canceled", map[string]any{"stage": run.Stage})
+			return p.result(run, "cancelada"), runErr
+		}
 		run.Status = "failed"
 		run.Error = runErr.Error()
 		if err := saveRun(run, dir); err != nil {
@@ -215,7 +239,7 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			if st.Name == "architect" {
 				gate = "plan"
 			}
-			if err := p.gate(ctx, run, gate, trace); err != nil {
+			if err := p.gate(ctx, run, gate, trace, opts.AutoApprove); err != nil {
 				st.Status = "gated"
 				p.save(run, dir)
 				return err
@@ -233,12 +257,12 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 		case "requirements":
 			err = p.runArtifactStage(ctx, run, trace, "requirements", "spec.md", budget)
 			if err == nil {
-				err = p.gate(ctx, run, "spec", trace)
+				err = p.gate(ctx, run, "spec", trace, opts.AutoApprove)
 			}
 		case "architect":
 			err = p.runArtifactStage(ctx, run, trace, "architect", "plan.md", budget)
 			if err == nil {
-				err = p.gate(ctx, run, "plan", trace)
+				err = p.gate(ctx, run, "plan", trace, opts.AutoApprove)
 			}
 		case "implement":
 			err = p.implement(ctx, run, trace, "", budget)
@@ -358,6 +382,12 @@ func (p *Pipeline) runTests(ctx context.Context, run *RunState, trace telemetry.
 	if len(p.Cfg.Workspace.TestCommands) == 0 {
 		buf.WriteString("nenhum comando de teste configurado em workspace.test_commands\n")
 	} else {
+		release, err := p.Limiter.Acquire(ctx, "test:"+filepath.Clean(run.Repo), p.Cfg.Workspace.MaxTestConcurrency)
+		if err != nil {
+			span.End(nil, err)
+			return false, "", err
+		}
+		defer release()
 		for _, command := range p.Cfg.Workspace.TestCommands {
 			fmt.Fprintf(&buf, "$ %s\n", command)
 			cctx := ctx
@@ -539,14 +569,14 @@ func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Wor
 	return nil
 }
 
-func (p *Pipeline) gate(ctx context.Context, run *RunState, name string, trace telemetry.Trace) error {
+func (p *Pipeline) gate(ctx context.Context, run *RunState, name string, trace telemetry.Trace, autoApprove bool) error {
 	if !p.Cfg.Workspace.GateEnabled(name) {
 		return nil
 	}
 	if run.Gates[name] == "approved" {
 		return nil
 	}
-	if p.AutoApprove {
+	if autoApprove {
 		run.Gates[name] = "approved"
 		p.save(run, p.runDir(run))
 		appendEvent(p.runDir(run), "gate.approved", map[string]any{"gate": name, "mode": "auto"})
@@ -576,6 +606,16 @@ func (p *Pipeline) callEngine(ctx context.Context, run *RunState, trace telemetr
 	if budget > 0 && run.Usage.CostUSD >= budget {
 		return engine.Result{}, fmt.Errorf("orçamento de US$ %.2f excedido (gasto atual US$ %.2f)", budget, run.Usage.CostUSD)
 	}
+	limit := 0
+	if ec, err := p.Cfg.EngineConfig(engineName); err == nil {
+		limit = ec.MaxConcurrency
+	}
+	release, err := p.Limiter.Acquire(ctx, "engine:"+engineName, limit)
+	if err != nil {
+		return engine.Result{}, err
+	}
+	defer release()
+
 	eng, err := p.Engines.Get(engineName)
 	if err != nil {
 		return engine.Result{}, err
@@ -783,11 +823,13 @@ func (p *Pipeline) result(run *RunState, summary string) *Result {
 	return &Result{
 		RunID:    run.ID,
 		Status:   run.Status,
+		Stage:    run.Stage,
 		RunDir:   p.runDir(run),
 		Worktree: run.Worktree,
 		Branch:   run.Branch,
 		PRURL:    run.PRURL,
 		Summary:  summary,
+		Usage:    run.Usage,
 	}
 }
 
@@ -799,9 +841,9 @@ func (p *Pipeline) newRunID(task *source.Task) string {
 	if len(slug) > 24 {
 		slug = slug[:24]
 	}
-	id := time.Now().UTC().Format("20060102-150405") + "-" + slug
+	id := fmt.Sprintf("%s-%s-%06x", time.Now().UTC().Format("20060102-150405"), slug, time.Now().UnixNano()&0xffffff)
 	if _, err := os.Stat(filepath.Join(p.Cfg.RunsDir(), id)); err == nil {
-		id = fmt.Sprintf("%s-%04x", id, time.Now().UnixNano()&0xffff)
+		id = fmt.Sprintf("%s-%d", id, time.Now().UnixNano())
 	}
 	return id
 }

@@ -50,6 +50,7 @@ type EngineConfig struct {
 	PromptVia      string   `yaml:"prompt_via"`
 	Output         string   `yaml:"output"`
 	AutoApprove    bool     `yaml:"auto_approve"`
+	MaxConcurrency int      `yaml:"max_concurrency"`
 }
 
 type Defaults struct {
@@ -58,6 +59,8 @@ type Defaults struct {
 	BudgetUSD       float64  `yaml:"budget_usd"`
 	MaxTestRetries  int      `yaml:"max_test_retries"`
 	MaxReviewRounds int      `yaml:"max_review_rounds"`
+	Workers         int      `yaml:"workers"`
+	ClaimTTL        Duration `yaml:"claim_ttl"`
 }
 
 type StageConfig struct {
@@ -108,10 +111,11 @@ func (s SourceConfig) WriteBackEnabled() bool {
 }
 
 type WorkspaceConfig struct {
-	DefaultRepo  string            `yaml:"default_repo"`
-	RepoMap      map[string]string `yaml:"repo_map"`
-	TestCommands []string          `yaml:"test_commands"`
-	Gates        map[string]bool   `yaml:"gates"`
+	DefaultRepo        string            `yaml:"default_repo"`
+	RepoMap            map[string]string `yaml:"repo_map"`
+	TestCommands       []string          `yaml:"test_commands"`
+	Gates              map[string]bool   `yaml:"gates"`
+	MaxTestConcurrency int               `yaml:"max_test_concurrency"`
 }
 
 func (w WorkspaceConfig) GateEnabled(name string) bool {
@@ -221,6 +225,12 @@ func (c *Config) applyDefaults() {
 	if c.Defaults.MaxReviewRounds == 0 {
 		c.Defaults.MaxReviewRounds = 2
 	}
+	if c.Defaults.Workers == 0 {
+		c.Defaults.Workers = 2
+	}
+	if c.Defaults.ClaimTTL == 0 {
+		c.Defaults.ClaimTTL = Duration(2 * time.Hour)
+	}
 
 	if c.Telemetry.Provider == "" {
 		c.Telemetry.Provider = "noop"
@@ -261,6 +271,9 @@ func (c *Config) applyDefaults() {
 
 	if c.Stages == nil {
 		c.Stages = map[string]StageConfig{}
+	}
+	if c.Workspace.MaxTestConcurrency == 0 {
+		c.Workspace.MaxTestConcurrency = 1
 	}
 }
 
@@ -356,6 +369,7 @@ const DefaultConfigYAML = `engines:
   claude:
     driver: claude
     bin: claude
+    max_concurrency: 1
     permission_mode: acceptEdits
     allowed_tools:
       - Read
@@ -368,6 +382,7 @@ const DefaultConfigYAML = `engines:
   opencode:
     driver: opencode
     bin: opencode
+    max_concurrency: 2
     # auto_approve: true   # apenas em worktree isolado
   fake:
     driver: fake
@@ -378,6 +393,8 @@ defaults:
   budget_usd: 5.00
   max_test_retries: 1
   max_review_rounds: 2
+  workers: 2
+  claim_ttl: 2h
 
 stages:
   requirements:
@@ -409,6 +426,7 @@ default_source: folder
 workspace:
   default_repo: .
   test_commands: []
+  max_test_concurrency: 1
   gates:
     spec: true
     plan: true

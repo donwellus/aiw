@@ -21,6 +21,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Telemetry.Provider != "noop" {
 		t.Fatalf("telemetria = %q", cfg.Telemetry.Provider)
 	}
+	if cfg.Defaults.Workers != 2 {
+		t.Fatalf("workers = %d", cfg.Defaults.Workers)
+	}
+	if cfg.Defaults.ClaimTTL.Std() != 2*time.Hour {
+		t.Fatalf("claim_ttl = %v", cfg.Defaults.ClaimTTL.Std())
+	}
+	if cfg.Workspace.MaxTestConcurrency != 1 {
+		t.Fatalf("max_test_concurrency = %d", cfg.Workspace.MaxTestConcurrency)
+	}
 	if cfg.DefaultSource != "folder" {
 		t.Fatalf("fonte padrão = %q", cfg.DefaultSource)
 	}

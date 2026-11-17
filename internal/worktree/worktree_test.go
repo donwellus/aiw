@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -46,7 +48,7 @@ func TestCreateDiffCommitRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if wt.Branch != "github.com/donwellus/aiw/run-1" {
+	if wt.Branch != "aiw/run-1" {
 		t.Fatalf("branch = %q", wt.Branch)
 	}
 	if _, err := os.Stat(wt.Path); err != nil {
@@ -106,5 +108,32 @@ func TestCreateDiffCommitRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
 		t.Fatalf("worktree ainda existe: %v", err)
+	}
+}
+
+func TestCreateConcurrent(t *testing.T) {
+	repo := newRepo(t)
+	dataDir := t.TempDir()
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	var failures int32
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			if _, err := Create(ctx, repo, dataDir, "concurrent-"+string(rune('a'+index))); err != nil {
+				atomic.AddInt32(&failures, 1)
+				t.Errorf("Create %d: %v", index, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if failures != 0 {
+		t.Fatalf("falhas = %d", failures)
+	}
+	output := runGit(t, repo, "worktree", "list", "--porcelain")
+	count := strings.Count(output, "worktree ")
+	if count < 4 {
+		t.Fatalf("worktrees = %d, esperado 4 (principal + 3)", count)
 	}
 }

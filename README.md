@@ -132,14 +132,37 @@ aiw resume <run-id>
 | `aiw init` | cria `.aiw/config.yaml`, `tasks/` e tarefa de exemplo |
 | `aiw doctor` | valida engines, fontes, git, gh e Langfuse |
 | `aiw sync` | busca tarefas e grava snapshots em `.aiw/queue/` |
-| `aiw list [--eligible] [--json]` | lista tarefas da fonte |
-| `aiw run --task <path\|source:id>` | executa o pipeline |
+| `aiw list [--eligible] [--status] [--json]` | lista tarefas e seus status locais |
+| `aiw run --task <path\|source:id>` | executa o pipeline para uma tarefa |
+| `aiw work --workers N --auto` | processa tarefas elegíveis em paralelo |
+| `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
 | `aiw status <run-id>` | estado, estágios, custo e eventos |
 | `aiw approve <run-id> <gate>` | aprova `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 
 Flags úteis de `run`: `--repo`, `--engine`, `--auto`, `--budget`, `--pr`, `--force`, `--no-write-back`.
+
+### Paralelismo (`aiw work`)
+
+```bash
+aiw work --workers 2 --auto
+aiw work --workers 3 --auto --max-tasks 6 --budget 2 --json
+aiw list --eligible
+aiw list --status running
+aiw release <run-id>
+```
+
+- Cada tarefa é reivindicada por um **claim atômico** (`O_EXCL`) em `.aiw/state/claims`, com TTL e heartbeat enquanto a run está viva.
+- O estado fica por tarefa em `.aiw/state/tasks` (migra automaticamente o antigo `tasks.json`).
+- Cada worker usa seu próprio worktree/branch; falha em uma tarefa não interrompe as outras.
+- Limites: `--workers` global, `max_concurrency` por engine e `max_test_concurrency` por repositório.
+- Nesta fase os gates exigem `--auto`; intake e gates policy-based vêm na próxima fase.
+- Saída: uma linha por tarefa (`ok`, `falhou`, `ignorada`, `cancelada`); `--json` emite JSONL.
+- Ctrl+C para de enfileirar, cancela runs em andamento, libera claims e devolve tarefas canceladas para `todo`.
+- `aiw release` serve para runs que morreram sem liberar o claim/estado.
+
+Limitações atuais do pool: `tasks/` é local ao clone; um daemon (`aiw daemon`) com polling e um intake com perguntas automáticas ficam nas próximas fases.
 
 ## Configuração
 
@@ -150,11 +173,13 @@ engines:
   claude:
     driver: claude
     bin: claude
+    max_concurrency: 1
     permission_mode: acceptEdits
     allowed_tools: ["Read", "Grep", "Glob", "Edit", "Write", "Bash(git *)", "Bash(go test *)"]
   opencode:
     driver: opencode
     bin: opencode
+    max_concurrency: 2
     # auto_approve: true   # apenas em worktree isolado; libera edições no headless
   fake:
     driver: fake
@@ -165,6 +190,8 @@ defaults:
   budget_usd: 5.00
   max_test_retries: 1
   max_review_rounds: 2
+  workers: 2
+  claim_ttl: 2h
 
 stages:
   requirements: {engine: claude}
@@ -193,6 +220,7 @@ default_source: folder
 workspace:
   default_repo: .
   test_commands: ["go test ./..."]
+  max_test_concurrency: 1
   gates: {spec: true, plan: true}
 ```
 
@@ -272,8 +300,9 @@ Para reportar vulnerabilidades, siga [SECURITY.md](SECURITY.md); não abra issue
 
 ```bash
 make check     # go vet + go test
-make smoke     # executa o pipeline fake ponta a ponta em um repo temporário
-make lint      # golangci-lint (opcional; requer instalação local)
+make smoke     # pipeline fake ponta a ponta em repo temporário
+make verify    # dois pools concorrentes, exactly-once, falha isolada e cancelamento
+make lint      # golangci-lint (requer instalação local)
 ```
 
 Estrutura:
@@ -286,6 +315,7 @@ internal/source      contratos de fontes
 internal/source/folder
 internal/sources     registry de fontes
 internal/engine      contratos + adapters claude/opencode/exec/fake
+internal/runner      claim, estado por tarefa e pool de workers
 internal/pipeline    máquina de estados, gates, artefatos, budget
 internal/worktree    git worktree por run
 internal/state       deduplicação/lock local
@@ -297,11 +327,11 @@ docs/adr             decisões de arquitetura
 
 ## CI e qualidade
 
-- `ci.yml`: build, `go vet`, `go test -race`, gofmt, golangci-lint e smoke test em Ubuntu (Go 1.26 e stable) e macOS.
+- `ci.yml`: build, `go vet`, `go test -race`, gofmt, golangci-lint e smoke test em Ubuntu (Go 1.26 e stable) e macOS; job `integration` roda `make verify`.
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 
-O smoke test usa o engine `fake`: valida o pipeline inteiro sem LLM, sem rede e sem custo.
+O smoke test usa o engine `fake`: valida o pipeline inteiro sem LLM, sem rede e sem custo. O `make verify` usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente e cancelamento.
 
 ## Licença
 
@@ -313,5 +343,6 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 - Fonte apenas `folder`; conectores remotos são o próximo passo (GitHub → Linear → Jira → Trello).
 - Evals ainda em tests de integração; a suíte `aiw eval` com tarefas golden é o próximo marco.
-- Sem execução paralela entre tarefas.
+- `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) virão nas próximas fases.
+- Gates no pool exigem `--auto`; o intake com DoR/perguntas automáticas é o próximo passo.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.

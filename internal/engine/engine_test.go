@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/donwellus/aiw/internal/config"
 )
@@ -81,5 +82,47 @@ func TestRegistryFake(t *testing.T) {
 	}
 	if _, err := registry.Get("inexistente"); err == nil {
 		t.Fatal("esperava erro para engine inexistente")
+	}
+}
+
+func TestLimiter(t *testing.T) {
+	limiter := NewLimiter()
+	ctx := context.Background()
+	release1, err := limiter.Acquire(ctx, "engine:x", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := make(chan struct{})
+	go func() {
+		release2, err := limiter.Acquire(ctx, "engine:x", 1)
+		if err == nil {
+			release2()
+		}
+		close(blocked)
+	}()
+	select {
+	case <-blocked:
+		t.Fatal("segunda aquisição não deveria passar")
+	case <-time.After(30 * time.Millisecond):
+	}
+	release1()
+	select {
+	case <-blocked:
+	case <-time.After(time.Second):
+		t.Fatal("segunda aquisição não foi liberada")
+	}
+}
+
+func TestLimiterCancel(t *testing.T) {
+	limiter := NewLimiter()
+	release, err := limiter.Acquire(context.Background(), "engine:y", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := limiter.Acquire(ctx, "engine:y", 1); err == nil {
+		t.Fatal("esperava erro de contexto")
 	}
 }

@@ -5,7 +5,7 @@ LDFLAGS := -s -w -X github.com/donwellus/aiw/internal/cli.Version=$(VERSION)
 LANGFUSE_DIR := infra/langfuse
 COMPOSE := docker compose -f $(LANGFUSE_DIR)/compose.yaml --env-file $(LANGFUSE_DIR)/.env
 
-.PHONY: build install test vet lint fmt check telemetry-init telemetry-up telemetry-down telemetry-reset telemetry-logs telemetry-env smoke clean
+.PHONY: build install test vet lint fmt check verify telemetry-init telemetry-up telemetry-down telemetry-reset telemetry-logs telemetry-env smoke clean
 
 build:
 	mkdir -p bin
@@ -50,6 +50,9 @@ telemetry-env:
 
 smoke: build
 	@./scripts/smoke.sh
+
+verify: build
+	@./scripts/verify-parallel.sh
 
 clean:
 	rm -rf bin

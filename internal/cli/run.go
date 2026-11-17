@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/donwellus/aiw/internal/pipeline"
+	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/state"
 )
 
@@ -40,7 +44,8 @@ func newRunCommand(opts *rootOptions) *cobra.Command {
 				}
 			}
 
-			ctx := context.Background()
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
 			_, ref, task, err := resolveTask(ctx, cfg, sourceName, taskArg)
 			if err != nil {
 				return err
@@ -49,95 +54,60 @@ func newRunCommand(opts *rootOptions) *cobra.Command {
 			if repo == "" {
 				return errors.New("repositório não resolvido: use --repo, frontmatter repo:, label repo:<nome> ou workspace.default_repo")
 			}
-
 			store, err := state.Open(cfg.StateDir())
 			if err != nil {
 				return err
 			}
-			previous, found := store.Get(task.Source, task.ExternalID)
-			if found && !force {
-				switch previous.Status {
-				case "succeeded":
-					if previous.ContentHash == task.ContentHash {
-						fmt.Fprintf(cmd.OutOrStdout(), "tarefa %s já concluída com o mesmo conteúdo (run %s); use --force para repetir\n", task.ExternalID, previous.RunID)
-						return nil
-					}
-				case "paused":
-					if previous.ContentHash == task.ContentHash {
-						return fmt.Errorf("tarefa pausada na run %s; use 'aiw resume %s' ou --force", previous.RunID, previous.RunID)
-					}
-				case "running":
-					if time.Since(previous.UpdatedAt) < 2*time.Hour {
-						return fmt.Errorf("tarefa já em execução na run %s; use --force se a execução morreu", previous.RunID)
-					}
-				}
-			}
 
-			if err := store.Put(state.TaskRecord{
-				Source:      task.Source,
-				ID:          task.ExternalID,
-				Status:      "running",
-				ContentHash: task.ContentHash,
-			}); err != nil {
-				return err
-			}
-
-			p.AutoApprove = auto
-			res, runErr := p.Run(ctx, task, ref, repo, pipeline.Options{
-				AutoApprove:      auto,
-				EngineOverride:   engineName,
-				BudgetUSD:        budget,
-				CreatePR:         createPR,
-				DisableWriteBack: noWriteBack,
+			run := runner.New(cfg, store, p)
+			outcome := run.Execute(ctx, runner.Request{
+				Task:  task,
+				Ref:   ref,
+				Repo:  repo,
+				Force: force,
+				Options: pipeline.Options{
+					AutoApprove:      auto,
+					EngineOverride:   engineName,
+					BudgetUSD:        budget,
+					CreatePR:         createPR,
+					DisableWriteBack: noWriteBack,
+				},
 			})
 
-			if runErr != nil && errors.Is(runErr, pipeline.ErrPaused) {
-				if err := store.Put(state.TaskRecord{
-					Source:      task.Source,
-					ID:          task.ExternalID,
-					Status:      "paused",
-					RunID:       res.RunID,
-					ContentHash: task.ContentHash,
-				}); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
-				}
-				out := cmd.OutOrStdout()
-				fmt.Fprintf(out, "run %s pausada aguardando aprovação\n", res.RunID)
-				fmt.Fprintf(out, "artefatos: %s\n", res.RunDir)
-				fmt.Fprintf(out, "aprove com: aiw approve %s <spec|plan>\n", res.RunID)
-				fmt.Fprintf(out, "depois rode: aiw resume %s\n", res.RunID)
+			output := cmd.OutOrStdout()
+			switch outcome.Status {
+			case "skipped":
+				fmt.Fprintf(output, "tarefa %s ignorada: %s\n", outcome.TaskID, outcome.Reason)
 				return nil
-			}
-			if runErr != nil {
-				if err := store.Put(state.TaskRecord{
-					Source:      task.Source,
-					ID:          task.ExternalID,
-					Status:      "failed",
-					RunID:       res.RunID,
-					ContentHash: task.ContentHash,
-				}); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
+			case "busy":
+				return fmt.Errorf("tarefa %s está em execução em outro processo", outcome.TaskID)
+			case "paused":
+				fmt.Fprintf(output, "run %s pausada aguardando aprovação\n", outcome.RunID)
+				fmt.Fprintf(output, "artefatos: %s\n", outcome.RunDir)
+				if outcome.Reason != "" {
+					fmt.Fprintf(output, "%s\n", outcome.Reason)
 				}
-				return runErr
+				fmt.Fprintf(output, "aprove com: aiw approve %s <spec|plan>\n", outcome.RunID)
+				fmt.Fprintf(output, "depois rode: aiw resume %s\n", outcome.RunID)
+				return nil
+			case "canceled":
+				fmt.Fprintf(output, "run %s cancelada\n", outcome.RunID)
+				return fmt.Errorf("execução cancelada")
+			case "failed":
+				if outcome.Err != nil {
+					return outcome.Err
+				}
+				return fmt.Errorf("run %s falhou", outcome.RunID)
 			}
 
-			if err := store.Put(state.TaskRecord{
-				Source:      task.Source,
-				ID:          task.ExternalID,
-				Status:      "succeeded",
-				RunID:       res.RunID,
-				ContentHash: task.ContentHash,
-			}); err != nil {
-				return err
-			}
-
-			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "run %s concluída\n", res.RunID)
-			fmt.Fprintf(out, "branch: %s\n", res.Branch)
-			fmt.Fprintf(out, "worktree: %s\n", res.Worktree)
-			fmt.Fprintf(out, "artefatos: %s\n", res.RunDir)
-			if res.PRURL != "" {
-				fmt.Fprintf(out, "PR: %s\n", res.PRURL)
+			fmt.Fprintf(output, "run %s concluída\n", outcome.RunID)
+			fmt.Fprintf(output, "branch: %s\n", outcome.Branch)
+			fmt.Fprintf(output, "worktree: %s\n", outcome.Worktree)
+			fmt.Fprintf(output, "artefatos: %s\n", outcome.RunDir)
+			fmt.Fprintf(output, "custo: US$ %.4f (%d in / %d out tokens)\n", outcome.CostUSD, outcome.InputTokens, outcome.OutputTokens)
+			fmt.Fprintf(output, "duração: %s\n", formatDuration(outcome.Duration))
+			if outcome.PRURL != "" {
+				fmt.Fprintf(output, "PR: %s\n", outcome.PRURL)
 			}
 			return nil
 		},
@@ -149,8 +119,15 @@ func newRunCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&engineName, "engine", "", "engine para todos os estágios")
 	cmd.Flags().Float64Var(&budget, "budget", 0, "orçamento máximo em USD (sobrepõe o config)")
 	cmd.Flags().BoolVar(&auto, "auto", false, "aprova gates automaticamente")
-	cmd.Flags().BoolVar(&force, "force", false, "ignora deduplicação e locks")
+	cmd.Flags().BoolVar(&force, "force", false, "ignora deduplicação de tarefas concluídas/pausadas")
 	cmd.Flags().BoolVar(&createPR, "pr", false, "faz push e cria PR com gh")
 	cmd.Flags().BoolVar(&noWriteBack, "no-write-back", false, "não atualiza o estado na fonte")
 	return cmd
+}
+
+func formatDuration(value time.Duration) string {
+	if value < time.Second {
+		return value.Round(time.Millisecond).String()
+	}
+	return value.Round(time.Second).String()
 }

@@ -3,12 +3,14 @@ package engine
 import (
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/donwellus/aiw/internal/config"
 )
 
 type Registry struct {
 	cfg   *config.Config
+	mu    sync.Mutex
 	cache map[string]Engine
 }
 
@@ -20,6 +22,8 @@ func (r *Registry) Get(name string) (Engine, error) {
 	if name == "" {
 		name = r.cfg.Defaults.Engine
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if cached, ok := r.cache[name]; ok {
 		return cached, nil
 	}

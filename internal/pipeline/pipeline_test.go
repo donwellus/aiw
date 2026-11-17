@@ -116,9 +116,8 @@ func TestRunEndToEndWithFakeEngine(t *testing.T) {
 	recorder := telemetry.NewRecorder()
 	p := New(cfg)
 	p.Telemetry = recorder
-	p.AutoApprove = true
 
-	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{})
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{AutoApprove: true})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -204,8 +203,7 @@ func TestPausedGateAndResume(t *testing.T) {
 
 	p2 := New(cfg)
 	p2.Telemetry = telemetry.NewRecorder()
-	p2.AutoApprove = true
-	resumed, err := p2.Resume(context.Background(), res.RunID, Options{})
+	resumed, err := p2.Resume(context.Background(), res.RunID, Options{AutoApprove: true})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
 	}

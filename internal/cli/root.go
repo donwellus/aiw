@@ -41,6 +41,8 @@ func NewRoot() *cobra.Command {
 		newSyncCommand(opts),
 		newListCommand(opts),
 		newRunCommand(opts),
+		newWorkCommand(opts),
+		newReleaseCommand(opts),
 		newRunsCommand(opts),
 		newStatusCommand(opts),
 		newApproveCommand(opts),

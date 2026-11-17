@@ -38,6 +38,7 @@ type langfuse struct {
 	user     string
 	pass     string
 	once     sync.Once
+	flushMu  sync.Mutex
 }
 
 func newLangfuse(cfg config.TelemetryConfig) (*langfuse, error) {
@@ -142,6 +143,8 @@ func (l *langfuse) Start(ctx context.Context, info TraceInfo) Trace {
 }
 
 func (l *langfuse) Flush(ctx context.Context) error {
+	l.flushMu.Lock()
+	defer l.flushMu.Unlock()
 	if err := l.provider.ForceFlush(ctx); err != nil {
 		if l.strict {
 			return err
@@ -154,6 +157,8 @@ func (l *langfuse) Flush(ctx context.Context) error {
 func (l *langfuse) Close(ctx context.Context) error {
 	var err error
 	l.once.Do(func() {
+		l.flushMu.Lock()
+		defer l.flushMu.Unlock()
 		err = l.provider.Shutdown(ctx)
 		if err != nil && !l.strict {
 			log.Printf("langfuse: falha ao encerrar exporter: %v", err)

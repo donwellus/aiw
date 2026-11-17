@@ -9,7 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 )
+
+var repoLocks sync.Map
 
 type Worktree struct {
 	Repo       string
@@ -28,7 +32,7 @@ func Create(ctx context.Context, repo, dataDir, runID string) (*Worktree, error)
 	if err != nil {
 		return nil, fmt.Errorf("lendo HEAD de %s: %w", repoTop, err)
 	}
-	branch := "github.com/donwellus/aiw/" + runID
+	branch := "aiw/" + runID
 	path := filepath.Join(dataDir, "worktrees", runID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -36,9 +40,12 @@ func Create(ctx context.Context, repo, dataDir, runID string) (*Worktree, error)
 	if _, err := os.Stat(path); err == nil {
 		return nil, fmt.Errorf("worktree já existe em %s", path)
 	}
-	if _, err := git(ctx, repoTop, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+	unlock := lockRepo(repoTop)
+	if err := addWithRetry(ctx, repoTop, branch, path); err != nil {
+		unlock()
 		return nil, err
 	}
+	unlock()
 	wt := &Worktree{
 		Repo:       repoTop,
 		Path:       path,
@@ -105,7 +112,9 @@ func (w *Worktree) Push(ctx context.Context) error {
 }
 
 func (w *Worktree) Remove(ctx context.Context) error {
+	unlock := lockRepo(w.Repo)
 	_, err := git(ctx, w.Repo, "worktree", "remove", "--force", w.Path)
+	unlock()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		if _, statErr := os.Stat(w.Path); os.IsNotExist(statErr) {
 			return nil
@@ -165,6 +174,38 @@ func ensureExcluded(ctx context.Context, wtPath, pattern string) error {
 	}
 	_, err = file.WriteString(pattern + "\n")
 	return err
+}
+
+func lockRepo(repo string) func() {
+	value, _ := repoLocks.LoadOrStore(repo, &sync.Mutex{})
+	mutex := value.(*sync.Mutex)
+	mutex.Lock()
+	return mutex.Unlock
+}
+
+func addWithRetry(ctx context.Context, repo, branch, path string) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			}
+		}
+		if _, err := git(ctx, repo, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
+			lastErr = err
+			if !strings.Contains(strings.ToLower(err.Error()), "lock") {
+				return err
+			}
+			if _, statErr := os.Stat(path); statErr == nil {
+				_ = os.RemoveAll(path)
+			}
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {
