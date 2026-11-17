@@ -1,0 +1,8 @@
+name: smoke
+engine: fake
+timeout: 2m
+cases:
+  - id: fake-change
+    task: tasks/001.md
+    repo: fixtures/demo
+    verify: test -f AIW_FAKE_CHANGE.md

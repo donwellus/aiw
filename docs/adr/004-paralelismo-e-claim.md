@@ -12,7 +12,7 @@ O `aiw` executava uma tarefa por vez. Precisamos processar várias tarefas em pa
 1. **Pool batch `aiw work`**: N workers em processo, fila snapshot das tarefas elegíveis, uma linha de resultado por tarefa. Gates exigem `--auto` nesta fase.
 2. **Claim atômico por tarefa**: arquivo em `.aiw/state/claims/<source>-<id>-<hash>.lock` criado com `O_CREATE|O_EXCL`, contendo `run_id`, `pid` e timestamp. TTL configurável + heartbeat enquanto a run está viva. `aiw release <run-id>` libera runs mortas.
 3. **Estado por tarefa**: `.aiw/state/tasks/<source>-<id>-<hash>.json` com escrita atômica. Migração automática do antigo `tasks.json` para um backup `.migrated`.
-4. **Isolamento**: cada worker mantém worktree/branch próprios. `git worktree add` é serializado por repositório em processo e tem retry para contenção de lock do git.
+4. **Isolamento**: cada worker mantém worktree/branch próprios. `git worktree add` é serializado por repositório com mutex em processo e lock de arquivo no git common dir, com retry para contenção do git.
 5. **Limites**: `--workers` global, `max_concurrency` por engine, `max_test_concurrency` por repositório.
 6. **Cancelamento**: SIGINT/SIGTERM interrompe a fila, cancela runs em andamento, libera claims e devolve tarefas canceladas para `todo` (sem write-back para `failed`).
 7. **Uma tarefa falhando não derruba o pool**; o exit code é 1 se alguma falhar.

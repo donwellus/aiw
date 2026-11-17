@@ -71,6 +71,8 @@ type RunResult struct {
 	RunID   string
 	PRURL   string
 	Summary string
+	Branch  string
+	CostUSD float64
 }
 
 type StatusWriter interface {
@@ -85,6 +87,10 @@ type PendingWriter interface {
 
 type Releaser interface {
 	Release(ctx context.Context, ref Ref) error
+}
+
+type Checker interface {
+	Check(ctx context.Context) error
 }
 
 type Commenter interface {

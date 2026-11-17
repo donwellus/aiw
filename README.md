@@ -143,6 +143,7 @@ aiw resume <run-id>
 | `aiw run --task <path\|source:id>` | executa o pipeline para uma tarefa |
 | `aiw work --workers N [--auto]` | processa tarefas elegíveis em paralelo |
 | `aiw daemon [--interval 60s]` | processa continuamente em intervalos |
+| `aiw eval --suite <yaml>` | executa tarefas golden e mede sucesso/custo |
 | `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
@@ -164,7 +165,7 @@ aiw release <run-id>
 
 - Cada tarefa é reivindicada por um **claim atômico** (`O_EXCL`) em `.aiw/state/claims`, com TTL e heartbeat enquanto a run está viva.
 - O estado fica por tarefa em `.aiw/state/tasks` (migra automaticamente o antigo `tasks.json`).
-- Cada worker usa seu próprio worktree/branch; falha em uma tarefa não interrompe as outras.
+- Cada worker usa seu próprio worktree/branch; a criação é serializada por repo (mutex + lock de arquivo), então múltiplos pools não colidem no git.
 - Limites: `--workers` global, `max_concurrency` por engine e `max_test_concurrency` por repositório.
 - Tarefas de risco/`needs_input` pausam ou saem da fila sem derrubar os outros workers; `--auto` sobrepõe gates humanos.
 - Saída: uma linha por tarefa (`ok`, `falhou`, `needs_input`, `ignorada`, `cancelada`); `--json` emite JSONL.
@@ -200,6 +201,35 @@ sources:
 - `paused` permanece em `doing`; `needs_input`/cancelado voltam ao inbox; `done`/`failed` vão para as pastas finais.
 - `aiw release <run-id>` libera claim/estado e devolve a tarefa ao inbox.
 - Sem `doing_dir` (default), o claim atômico em `.aiw/state/claims` continua valendo.
+
+### Evals (`aiw eval`)
+
+```bash
+aiw eval --suite evals/smoke/suite.yaml --engine fake   # valida o harness
+aiw eval --suite minhas-golden/suite.yaml                # engine real do config
+aiw eval --suite ... --budget 2 --json --out /tmp/eval
+```
+
+Suite:
+
+```yaml
+name: meu-projeto
+engine: opencode          # opcional; pode vir do config ou --engine
+timeout: 30m
+cases:
+  - id: fix-off-by-one
+    task: tasks/001.md       # relativo à suite
+    repo: fixtures/repo      # relativo à suite (git clone ou pasta simples)
+    base_ref: main           # opcional
+    verify: go test ./...
+```
+
+- Cada caso roda em um clone/cópia temporário, com worktree e estado isolados; o repositório original não é tocado.
+- Métricas por caso: status do pipeline, verificação (`verify`), custo, duração, run/branch e artefatos copiados para o diretório de resultados.
+- `results.json` é gravado em `.aiw/evals/<timestamp>/` (ou `--out`); exit code 1 se qualquer caso falhar.
+- Telemetria fica `noop` nos evals para não poluir traces de produção.
+- `evals/smoke/suite.yaml` + `make eval-smoke` validam o harness com engine `fake`.
+- Evals são sequenciais nesta versão; não há LLM-as-judge nem comparação de diff de referência ainda — a verificação é o comando `verify`.
 
 ### Intake e gates automáticos
 
@@ -291,7 +321,40 @@ Precedência de engine: `--engine` > `stages.<estágio>.engine` > `defaults.engi
 
 ### Fontes
 
-A v0 implementa `folder` (Markdown com frontmatter YAML). Os contratos `Source`, `StatusWriter`, `Commenter` e `Labeler` já existem para GitHub, Linear, Jira e Trello. O write-back da pasta move a tarefa para `done_dir`/`failed_dir`.
+Implementadas: `folder` e `github`. Linear/Jira/Trello usam os mesmos contratos.
+
+#### GitHub
+
+```yaml
+sources:
+  github:
+    driver: github
+    repo: owner/name
+    repo_path: ../app          # checkout local correspondente
+    state: open
+    labels: [aiw]
+    exclude_labels: [aiw:running, aiw:done, aiw:failed]
+    comment: true
+    close_on_done: false
+```
+
+```bash
+aiw list --source github
+aiw run --source github --task github:123 --repo ../app --auto
+aiw work --source github --workers 2
+aiw daemon --source github --interval 60s
+```
+
+- Lê issues via `gh` (precisa estar autenticado): título, corpo, labels, assignee e comentários entram no contexto.
+- Itens `- [ ]`/`- [x]` do corpo viram critérios de aceite.
+- Write-back: `aiw:running` no claim; `aiw:done`/`aiw:failed` ao final, com comentário de run/branch/PR/custo; opcional fechar a issue (`close_on_done`).
+- `needs_input`/cancelamento removem `aiw:running` e liberam o claim.
+- `aiw release` remove `aiw:running` e devolve estado local para `todo`.
+- O repositório local é resolvido por `repo_path`, `repo:`/label `repo:*` ou `workspace.default_repo`.
+
+#### Folder
+
+Markdown com frontmatter YAML; write-back move a tarefa para `done_dir`/`failed_dir` (e `doing_dir` se configurada).
 
 Frontmatter aceito:
 
@@ -355,10 +418,11 @@ Para reportar vulnerabilidades, siga [SECURITY.md](SECURITY.md); não abra issue
 ## Desenvolvimento
 
 ```bash
-make check     # go vet + go test
-make smoke     # pipeline fake ponta a ponta em repo temporário
-make verify    # dois pools concorrentes, exactly-once, falha isolada e cancelamento
-make lint      # golangci-lint (requer instalação local)
+make check       # go vet + go test
+make smoke       # pipeline fake ponta a ponta em repo temporário
+make eval-smoke  # executa uma suite golden mínima com engine fake
+make verify      # eval-smoke + concorrência/claims/daemon/doing/cancelamento
+make lint        # golangci-lint (requer instalação local)
 ```
 
 Estrutura:
@@ -387,7 +451,7 @@ docs/adr             decisões de arquitetura
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 
-O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing` e um ciclo do daemon.
+O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` roda o eval smoke e usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing`, daemon e release.
 
 ## Licença
 
@@ -397,10 +461,9 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 ## Limitações atuais
 
-- Fonte apenas `folder`; conectores remotos são o próximo passo (GitHub → Linear → Jira → Trello).
-- Evals ainda em tests de integração; a suíte `aiw eval` com tarefas golden é o próximo marco.
-- `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) virão nas próximas fases.
-- Conectores remotos (GitHub/Linear/Jira/Trello) e evals (`aiw eval`) são os próximos passos.
+- Fonte `folder` e `github`; Linear/Jira/Trello são os próximos conectores.
+- Evals cobrem pipeline + comando de verificação; LLM-as-judge e comparação com diff de referência ainda não.
+- `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.

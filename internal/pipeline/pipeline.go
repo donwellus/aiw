@@ -1111,7 +1111,13 @@ func (p *Pipeline) writeBack(ctx context.Context, run *RunState, runErr error, o
 	}
 	dir := p.runDir(run)
 	if runErr == nil {
-		err = writer.MarkDone(ctx, run.Ref, source.RunResult{RunID: run.ID, PRURL: run.PRURL, Summary: "run concluída"})
+		err = writer.MarkDone(ctx, run.Ref, source.RunResult{
+			RunID:   run.ID,
+			PRURL:   run.PRURL,
+			Summary: "run concluída",
+			Branch:  run.Branch,
+			CostUSD: run.Usage.CostUSD,
+		})
 	} else {
 		err = writer.MarkFailed(ctx, run.Ref, runErr)
 	}

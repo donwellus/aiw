@@ -9,6 +9,9 @@ Descrição:
 Critérios de aceite fornecidos:
 {{range .Task.Acceptance}}- {{.}}
 {{end}}
+Comentários:
+{{range .Task.Comments}}- {{.Author}}: {{.Body}}
+{{end}}
 {{if .Task.Labels}}Labels: {{range $i, $l := .Task.Labels}}{{if $i}}, {{end}}{{$l}}{{end}}
 {{end}}
 Repositório: {{.Repo}}

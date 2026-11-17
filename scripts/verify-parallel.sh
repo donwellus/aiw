@@ -154,6 +154,14 @@ E1=$?
 wait "$P2"
 E2=$?
 set -e
+if [ "$E1" -ne 0 ]; then
+  tail -5 "$DIR/out1.jsonl" >&2 || true
+  tail -10 "$DIR/err1.log" >&2 || true
+fi
+if [ "$E2" -ne 0 ]; then
+  tail -5 "$DIR/out2.jsonl" >&2 || true
+  tail -10 "$DIR/err2.log" >&2 || true
+fi
 assert_eq "$E1" 0 "primeiro pool"
 assert_eq "$E2" 0 "segundo pool"
 

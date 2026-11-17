@@ -41,11 +41,17 @@ func Create(ctx context.Context, repo, dataDir, runID string) (*Worktree, error)
 		return nil, fmt.Errorf("worktree já existe em %s", path)
 	}
 	unlock := lockRepo(repoTop)
-	if err := addWithRetry(ctx, repoTop, branch, path); err != nil {
+	fsUnlock, err := lockWorktreeFS(ctx, repoTop)
+	if err != nil {
 		unlock()
 		return nil, err
 	}
+	err = addWithRetry(ctx, repoTop, branch, path)
+	fsUnlock()
 	unlock()
+	if err != nil {
+		return nil, err
+	}
 	wt := &Worktree{
 		Repo:       repoTop,
 		Path:       path,
@@ -113,7 +119,13 @@ func (w *Worktree) Push(ctx context.Context) error {
 
 func (w *Worktree) Remove(ctx context.Context) error {
 	unlock := lockRepo(w.Repo)
+	fsUnlock, lockErr := lockWorktreeFS(ctx, w.Repo)
+	if lockErr != nil {
+		unlock()
+		return lockErr
+	}
 	_, err := git(ctx, w.Repo, "worktree", "remove", "--force", w.Path)
+	fsUnlock()
 	unlock()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		if _, statErr := os.Stat(w.Path); os.IsNotExist(statErr) {
@@ -176,6 +188,45 @@ func ensureExcluded(ctx context.Context, wtPath, pattern string) error {
 	return err
 }
 
+func lockWorktreeFS(ctx context.Context, repo string) (func(), error) {
+	out, err := git(ctx, repo, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, err
+	}
+	commonDir := strings.TrimSpace(out)
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(repo, commonDir)
+	}
+	lockPath := filepath.Join(commonDir, "aiw-worktree.lock")
+	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = fmt.Fprintf(file, "%d %s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
+			_ = file.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, err
+		}
+		if info, statErr := os.Stat(lockPath); statErr == nil && time.Since(info.ModTime()) > 2*time.Minute {
+			_ = os.Remove(lockPath)
+			continue
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timeout aguardando lock de worktree em %s", lockPath)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(20*time.Millisecond + time.Duration(time.Now().UnixNano()%20)*time.Millisecond):
+		}
+	}
+}
+
 func lockRepo(repo string) func() {
 	value, _ := repoLocks.LoadOrStore(repo, &sync.Mutex{})
 	mutex := value.(*sync.Mutex)
@@ -185,19 +236,17 @@ func lockRepo(repo string) func() {
 
 func addWithRetry(ctx context.Context, repo, branch, path string) error {
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 6; attempt++ {
 		if attempt > 0 {
+			delay := time.Duration(attempt)*150*time.Millisecond + time.Duration(time.Now().UnixNano()%100)*time.Millisecond
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			case <-time.After(delay):
 			}
 		}
 		if _, err := git(ctx, repo, "worktree", "add", "-b", branch, path, "HEAD"); err != nil {
 			lastErr = err
-			if !strings.Contains(strings.ToLower(err.Error()), "lock") {
-				return err
-			}
 			if _, statErr := os.Stat(path); statErr == nil {
 				_ = os.RemoveAll(path)
 			}

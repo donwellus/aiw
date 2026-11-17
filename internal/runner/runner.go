@@ -225,9 +225,11 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 				}
 			}
 		case "failed":
-			if writer, ok := src.(source.StatusWriter); ok {
-				if err := writer.MarkFailed(ctx, req.Ref, runErr); err != nil {
-					r.pipe.Log.Warn("falha ao mover tarefa para failed", "task", req.Task.ExternalID, "error", err)
+			if result == nil {
+				if writer, ok := src.(source.StatusWriter); ok {
+					if err := writer.MarkFailed(ctx, req.Ref, runErr); err != nil {
+						r.pipe.Log.Warn("falha ao mover tarefa para failed", "task", req.Task.ExternalID, "error", err)
+					}
 				}
 			}
 		}

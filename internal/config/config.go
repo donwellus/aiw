@@ -156,6 +156,15 @@ type SourceConfig struct {
 	ExcludeLabels []string `yaml:"exclude_labels"`
 	Limit         int      `yaml:"limit"`
 	WriteBack     *bool    `yaml:"write_back"`
+
+	Repo         string `yaml:"repo"`
+	RepoPath     string `yaml:"repo_path"`
+	State        string `yaml:"state"`
+	RunningLabel string `yaml:"running_label"`
+	DoneLabel    string `yaml:"done_label"`
+	FailedLabel  string `yaml:"failed_label"`
+	Comment      *bool  `yaml:"comment"`
+	CloseOnDone  *bool  `yaml:"close_on_done"`
 }
 
 func (s SourceConfig) WriteBackEnabled() bool {
@@ -163,6 +172,20 @@ func (s SourceConfig) WriteBackEnabled() bool {
 		return true
 	}
 	return *s.WriteBack
+}
+
+func (s SourceConfig) CommentEnabled() bool {
+	if s.Comment == nil {
+		return true
+	}
+	return *s.Comment
+}
+
+func (s SourceConfig) CloseOnDoneEnabled() bool {
+	if s.CloseOnDone == nil {
+		return false
+	}
+	return *s.CloseOnDone
 }
 
 type WorkspaceConfig struct {
@@ -495,6 +518,15 @@ sources:
     # doing_dir: ./tasks/doing   # opcional: visibilidade/claim por rename
     done_dir: ./tasks/done
     failed_dir: ./tasks/failed
+  # github:
+  #   driver: github
+  #   repo: owner/name
+  #   repo_path: ../app          # checkout local correspondente
+  #   state: open
+  #   labels: [aiw]
+  #   exclude_labels: [aiw:running, aiw:done, aiw:failed]
+  #   comment: true
+  #   close_on_done: false
 default_source: folder
 
 workspace:

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/donwellus/aiw/internal/engine"
+	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/sources"
 )
 
@@ -68,13 +70,22 @@ func newDoctorCommand(opts *rootOptions) *cobra.Command {
 			sourceNames := sourceRegistry.Names()
 			sort.Strings(sourceNames)
 			for _, name := range sourceNames {
-				if _, err := sourceRegistry.Open(name); err != nil {
+				opened, err := sourceRegistry.Open(name)
+				if err != nil {
 					fail("fonte %s: %v", name, err)
 					continue
 				}
 				sc, err := cfg.SourceConfig(name)
 				if err != nil {
 					fail("fonte %s: %v", name, err)
+					continue
+				}
+				if checker, isChecker := opened.(source.Checker); isChecker {
+					if err := checker.Check(context.Background()); err != nil {
+						fail("fonte %s: %v", name, err)
+					} else {
+						ok("fonte %s (%s)", name, sc.Driver)
+					}
 					continue
 				}
 				if sc.Driver == "folder" {
