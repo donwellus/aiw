@@ -166,15 +166,24 @@ type SourceConfig struct {
 	Comment      *bool  `yaml:"comment"`
 	CloseOnDone  *bool  `yaml:"close_on_done"`
 
-	Team         string   `yaml:"team"`
-	Project      string   `yaml:"project"`
-	APIKeyEnv    string   `yaml:"api_key_env"`
-	Endpoint     string   `yaml:"endpoint"`
-	States       []string `yaml:"states"`
-	RunningState string   `yaml:"running_state"`
-	DoneState    string   `yaml:"done_state"`
-	FailedState  string   `yaml:"failed_state"`
-	PendingState string   `yaml:"pending_state"`
+	Team    string `yaml:"team"`
+	Project string `yaml:"project"`
+
+	BaseURL           string   `yaml:"base_url"`
+	JQL               string   `yaml:"jql"`
+	EmailEnv          string   `yaml:"email_env"`
+	TokenEnv          string   `yaml:"token_env"`
+	RunningTransition string   `yaml:"running_transition"`
+	DoneTransition    string   `yaml:"done_transition"`
+	FailedTransition  string   `yaml:"failed_transition"`
+	PendingTransition string   `yaml:"pending_transition"`
+	APIKeyEnv         string   `yaml:"api_key_env"`
+	Endpoint          string   `yaml:"endpoint"`
+	States            []string `yaml:"states"`
+	RunningState      string   `yaml:"running_state"`
+	DoneState         string   `yaml:"done_state"`
+	FailedState       string   `yaml:"failed_state"`
+	PendingState      string   `yaml:"pending_state"`
 }
 
 func (s SourceConfig) WriteBackEnabled() bool {
@@ -546,6 +555,16 @@ sources:
   #   done_state: Done
   #   failed_state: Todo
   #   pending_state: Todo
+  #   comment: true
+  # jira:
+  #   driver: jira
+  #   base_url: https://empresa.atlassian.net
+  #   jql: 'project = APP AND status = "To Do" ORDER BY updated DESC'
+  #   repo_path: ../app
+  #   running_transition: In Progress
+  #   done_transition: Done
+  #   failed_transition: To Do
+  #   pending_transition: To Do
   #   comment: true
 default_source: folder
 

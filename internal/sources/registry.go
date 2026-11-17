@@ -8,6 +8,7 @@ import (
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/source/folder"
 	"github.com/donwellus/aiw/internal/source/github"
+	"github.com/donwellus/aiw/internal/source/jira"
 	"github.com/donwellus/aiw/internal/source/linear"
 )
 
@@ -34,8 +35,10 @@ func (r *Registry) Open(name string) (source.Source, error) {
 		return github.New(name, r.cfg.Root, sc)
 	case "linear":
 		return linear.New(name, r.cfg.Root, sc)
+	case "jira":
+		return jira.New(name, r.cfg.Root, sc)
 	default:
-		return nil, fmt.Errorf("driver de fonte %q ainda não implementado (disponível: folder, github, linear)", sc.Driver)
+		return nil, fmt.Errorf("driver de fonte %q ainda não implementado (disponível: folder, github, linear, jira)", sc.Driver)
 	}
 }
 

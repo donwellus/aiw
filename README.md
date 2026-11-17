@@ -321,7 +321,7 @@ Precedência de engine: `--engine` > `stages.<estágio>.engine` > `defaults.engi
 
 ### Fontes
 
-Implementadas: `folder`, `github` e `linear`. Jira/Trello usam os mesmos contratos.
+Implementadas: `folder`, `github`, `linear` e `jira`. Trello usa os mesmos contratos.
 
 #### GitHub
 
@@ -382,6 +382,38 @@ aiw daemon --source linear --interval 60s
 - Write-back move o estado para `running_state`/`done_state`/`failed_state` e comenta run/branch/PR/custo; `needs_input`/cancelado vão para `pending_state`.
 - `aiw doctor` valida a API key, o viewer e o time.
 - O time é obrigatório; `states` filtra o que entra na fila; `repo_path` mapeia para o checkout local.
+
+#### Jira
+
+```yaml
+sources:
+  jira:
+    driver: jira
+    base_url: https://empresa.atlassian.net
+    jql: 'project = APP AND status = "To Do" ORDER BY updated DESC'
+    repo_path: ../app
+    running_transition: In Progress
+    done_transition: Done
+    failed_transition: To Do
+    pending_transition: To Do
+    comment: true
+    # email_env: JIRA_EMAIL
+    # token_env: JIRA_API_TOKEN
+```
+
+```bash
+export JIRA_EMAIL=voce@empresa.com JIRA_API_TOKEN=...
+aiw list --source jira
+aiw run --source jira --task jira:APP-123 --repo ../app --auto
+aiw work --source jira --workers 2
+aiw daemon --source jira --interval 60s
+```
+
+- REST API v3 (`search/jql`, ADF): lê resumo, descrição, status, labels, assignee e comentários.
+- Checklists ADF e `- [ ]` no texto viram critérios de aceite.
+- Write-back por transição (`running_transition`, etc.) e comentário com run/branch/PR/custo.
+- `aiw doctor` valida autenticação em `/myself`.
+- `jql` ou `project` é obrigatório para definir a fila.
 
 #### Folder
 
@@ -492,7 +524,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 ## Limitações atuais
 
-- Fontes `folder`, `github` e `linear`; Jira/Trello são os próximos conectores.
+- Fontes `folder`, `github`, `linear` e `jira`; Trello é o próximo conector.
 - Evals cobrem pipeline + comando de verificação; LLM-as-judge e comparação com diff de referência ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
