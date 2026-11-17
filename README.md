@@ -321,7 +321,7 @@ Precedência de engine: `--engine` > `stages.<estágio>.engine` > `defaults.engi
 
 ### Fontes
 
-Implementadas: `folder`, `github`, `linear` e `jira`. Trello usa os mesmos contratos.
+Implementadas: `folder`, `github`, `linear`, `jira` e `trello`.
 
 #### GitHub
 
@@ -414,6 +414,38 @@ aiw daemon --source jira --interval 60s
 - Write-back por transição (`running_transition`, etc.) e comentário com run/branch/PR/custo.
 - `aiw doctor` valida autenticação em `/myself`.
 - `jql` ou `project` é obrigatório para definir a fila.
+
+#### Trello
+
+```yaml
+sources:
+  trello:
+    driver: trello
+    board: boardId
+    list: "To Do"
+    running_list: "Doing"
+    done_list: "Done"
+    failed_list: "Blocked"
+    pending_list: "To Do"
+    repo_path: ../app
+    comment: true
+    # key_env: TRELLO_KEY
+    # token_env: TRELLO_TOKEN
+```
+
+```bash
+export TRELLO_KEY=... TRELLO_TOKEN=...
+aiw list --source trello
+aiw run --source trello --task trello:abc123 --repo ../app --auto
+aiw work --source trello --workers 2
+aiw daemon --source trello --interval 60s
+```
+
+- Cards da lista configurada entram na fila; labels, membros, descrição e comentários são lidos.
+- Checklists e `- [ ]` no texto viram critérios de aceite.
+- Write-back move o card entre listas (`running/done/failed/pending`) e comenta run/branch/PR/custo.
+- `aiw doctor` valida credenciais, board e listas.
+- `release` move o card para `pending_list`.
 
 #### Folder
 
@@ -524,7 +556,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 ## Limitações atuais
 
-- Fontes `folder`, `github`, `linear` e `jira`; Trello é o próximo conector.
+- Fontes `folder`, `github`, `linear`, `jira` e `trello`; MCP/outros provedores ficam para depois.
 - Evals cobrem pipeline + comando de verificação; LLM-as-judge e comparação com diff de referência ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.

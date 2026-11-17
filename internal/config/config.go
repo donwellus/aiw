@@ -184,6 +184,14 @@ type SourceConfig struct {
 	DoneState         string   `yaml:"done_state"`
 	FailedState       string   `yaml:"failed_state"`
 	PendingState      string   `yaml:"pending_state"`
+
+	Board       string `yaml:"board"`
+	List        string `yaml:"list"`
+	RunningList string `yaml:"running_list"`
+	DoneList    string `yaml:"done_list"`
+	FailedList  string `yaml:"failed_list"`
+	PendingList string `yaml:"pending_list"`
+	KeyEnv      string `yaml:"key_env"`
 }
 
 func (s SourceConfig) WriteBackEnabled() bool {
@@ -566,6 +574,18 @@ sources:
   #   failed_transition: To Do
   #   pending_transition: To Do
   #   comment: true
+  # trello:
+  #   driver: trello
+  #   board: boardId
+  #   list: "To Do"
+  #   running_list: "Doing"
+  #   done_list: "Done"
+  #   failed_list: "Blocked"
+  #   pending_list: "To Do"
+  #   repo_path: ../app
+  #   comment: true
+  #   # key_env: TRELLO_KEY
+  #   # token_env: TRELLO_TOKEN
 default_source: folder
 
 workspace:
