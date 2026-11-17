@@ -41,18 +41,25 @@ func (d Duration) Std() time.Duration {
 	return time.Duration(d)
 }
 
+type MCPServerConfig struct {
+	URL     string            `yaml:"url"`
+	Headers map[string]string `yaml:"headers"`
+	Enabled *bool             `yaml:"enabled"`
+}
+
 type EngineConfig struct {
-	Driver         string   `yaml:"driver"`
-	Bin            string   `yaml:"bin"`
-	Model          string   `yaml:"model"`
-	PermissionMode string   `yaml:"permission_mode"`
-	AllowedTools   []string `yaml:"allowed_tools"`
-	ExtraArgs      []string `yaml:"extra_args"`
-	Command        []string `yaml:"command"`
-	PromptVia      string   `yaml:"prompt_via"`
-	Output         string   `yaml:"output"`
-	AutoApprove    bool     `yaml:"auto_approve"`
-	MaxConcurrency int      `yaml:"max_concurrency"`
+	Driver         string                     `yaml:"driver"`
+	Bin            string                     `yaml:"bin"`
+	Model          string                     `yaml:"model"`
+	PermissionMode string                     `yaml:"permission_mode"`
+	AllowedTools   []string                   `yaml:"allowed_tools"`
+	ExtraArgs      []string                   `yaml:"extra_args"`
+	Command        []string                   `yaml:"command"`
+	PromptVia      string                     `yaml:"prompt_via"`
+	Output         string                     `yaml:"output"`
+	AutoApprove    bool                       `yaml:"auto_approve"`
+	MaxConcurrency int                        `yaml:"max_concurrency"`
+	MCP            map[string]MCPServerConfig `yaml:"mcp"`
 }
 
 type Defaults struct {
@@ -490,6 +497,11 @@ const DefaultConfigYAML = `engines:
     driver: claude
     bin: claude
     max_concurrency: 1
+    # mcp:
+    #   linear:
+    #     url: https://mcp.linear.app/mcp/readonly
+    #     headers:
+    #       Authorization: Bearer ${LINEAR_API_KEY}
     permission_mode: acceptEdits
     allowed_tools:
       - Read
@@ -503,6 +515,11 @@ const DefaultConfigYAML = `engines:
     driver: opencode
     bin: opencode
     max_concurrency: 2
+    # mcp:
+    #   linear:
+    #     url: https://mcp.linear.app/mcp/readonly
+    #     headers:
+    #       Authorization: Bearer ${LINEAR_API_KEY}
     # auto_approve: true   # apenas em worktree isolado
   fake:
     driver: fake

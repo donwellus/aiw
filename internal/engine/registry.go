@@ -31,7 +31,7 @@ func (r *Registry) Get(name string) (Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	built, err := build(name, ec)
+	built, err := build(name, ec, r.cfg.DataDir())
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +48,7 @@ func (r *Registry) Names() []string {
 	return names
 }
 
-func build(name string, ec config.EngineConfig) (Engine, error) {
+func build(name string, ec config.EngineConfig, dataDir string) (Engine, error) {
 	driver := ec.Driver
 	if driver == "" {
 		driver = name
@@ -57,9 +57,9 @@ func build(name string, ec config.EngineConfig) (Engine, error) {
 	case "fake":
 		return NewFake(name), nil
 	case "claude":
-		return NewClaude(name, ec)
+		return NewClaude(name, ec, dataDir)
 	case "opencode":
-		return NewOpencode(name, ec)
+		return NewOpencode(name, ec, dataDir)
 	case "exec":
 		return NewExec(name, ec)
 	default:

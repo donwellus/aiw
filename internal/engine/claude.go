@@ -14,18 +14,24 @@ import (
 )
 
 type Claude struct {
-	name string
-	cfg  config.EngineConfig
+	name     string
+	cfg      config.EngineConfig
+	mcpPath  string
+	mcpNames []string
 }
 
-func NewClaude(name string, cfg config.EngineConfig) (*Claude, error) {
+func NewClaude(name string, cfg config.EngineConfig, dataDir string) (*Claude, error) {
 	if cfg.Bin == "" {
 		cfg.Bin = "claude"
 	}
 	if _, err := exec.LookPath(cfg.Bin); err != nil {
 		return nil, fmt.Errorf("binário %q do engine %s não encontrado: %w", cfg.Bin, name, err)
 	}
-	return &Claude{name: name, cfg: cfg}, nil
+	mcpPath, mcpNames, err := writeClaudeMCP(dataDir, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Claude{name: name, cfg: cfg, mcpPath: mcpPath, mcpNames: mcpNames}, nil
 }
 
 func (c *Claude) Name() string {
@@ -55,8 +61,15 @@ func (c *Claude) Run(ctx context.Context, req Request) (Result, error) {
 	if req.SessionID != "" {
 		args = append(args, "--session-id", req.SessionID)
 	}
-	if len(c.cfg.AllowedTools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(c.cfg.AllowedTools, ","))
+	if c.mcpPath != "" {
+		args = append(args, "--mcp-config", c.mcpPath)
+	}
+	allowed := append([]string{}, c.cfg.AllowedTools...)
+	for _, mcpName := range c.mcpNames {
+		allowed = append(allowed, "mcp__"+mcpName)
+	}
+	if len(allowed) > 0 {
+		args = append(args, "--allowedTools", strings.Join(allowed, ","))
 	}
 	args = append(args, c.cfg.ExtraArgs...)
 	args = append(args, req.Prompt)

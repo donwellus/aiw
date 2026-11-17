@@ -15,18 +15,23 @@ import (
 )
 
 type Opencode struct {
-	name string
-	cfg  config.EngineConfig
+	name    string
+	cfg     config.EngineConfig
+	mcpPath string
 }
 
-func NewOpencode(name string, cfg config.EngineConfig) (*Opencode, error) {
+func NewOpencode(name string, cfg config.EngineConfig, dataDir string) (*Opencode, error) {
 	if cfg.Bin == "" {
 		cfg.Bin = "opencode"
 	}
 	if _, err := exec.LookPath(cfg.Bin); err != nil {
 		return nil, fmt.Errorf("binário %q do engine %s não encontrado: %w", cfg.Bin, name, err)
 	}
-	return &Opencode{name: name, cfg: cfg}, nil
+	mcpPath, err := writeOpencodeMCP(dataDir, name, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Opencode{name: name, cfg: cfg, mcpPath: mcpPath}, nil
 }
 
 func (o *Opencode) Name() string {
@@ -61,7 +66,11 @@ func (o *Opencode) Run(ctx context.Context, req Request) (Result, error) {
 
 	cmd := exec.CommandContext(cctx, o.cfg.Bin, args...)
 	cmd.Dir = req.Workdir
-	cmd.Env = append(os.Environ(), req.Env...)
+	env := append([]string{}, req.Env...)
+	if o.mcpPath != "" {
+		env = append(env, "OPENCODE_CONFIG="+o.mcpPath)
+	}
+	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

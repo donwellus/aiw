@@ -312,6 +312,32 @@ intake:
 
 Precedência de engine: `--engine` > `stages.<estágio>.engine` > `defaults.engine`.
 
+### MCP para agentes
+
+O source do Linear continua sendo GraphQL (determinístico). Opcionalmente, os agentes podem receber o **Linear MCP read-only** como ferramenta de contexto durante intake/spec:
+
+```yaml
+engines:
+  claude:
+    mcp:
+      linear:
+        url: https://mcp.linear.app/mcp/readonly
+        headers:
+          Authorization: Bearer ${LINEAR_API_KEY}
+  opencode:
+    mcp:
+      linear:
+        url: https://mcp.linear.app/mcp/readonly
+        headers:
+          Authorization: Bearer ${LINEAR_API_KEY}
+```
+
+- O `aiw` gera a configuração MCP por engine em `.aiw/mcp/` (0600, gitignored) e não loga headers/chaves.
+- Claude Code recebe `--mcp-config <arquivo>` e libera `mcp__linear` via `allowed_tools`; opencode recebe `OPENCODE_CONFIG=<arquivo>` com `oauth: false` e permissão `linear_*`.
+- Sem `LINEAR_API_KEY`, o servidor MCP é ignorado com aviso (não quebra a run).
+- Prefira `/mcp/readonly`: o write-back oficial continua no source GraphQL, evitando que o agente mude o Linear por fora do pipeline.
+- Nesta versão autenticamos por API key; OAuth interativo do MCP fica para depois.
+
 ### Engines
 
 - `claude`: modo headless `claude -p --output-format json`; custo/tokens vêm do JSON.
@@ -556,7 +582,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 ## Limitações atuais
 
-- Fontes `folder`, `github`, `linear`, `jira` e `trello`; MCP/outros provedores ficam para depois.
+- Fontes `folder`, `github`, `linear`, `jira` e `trello`; MCP opcional para agentes; OAuth/webhooks ficam para depois.
 - Evals cobrem pipeline + comando de verificação; LLM-as-judge e comparação com diff de referência ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
