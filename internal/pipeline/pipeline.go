@@ -25,7 +25,10 @@ import (
 	"github.com/donwellus/aiw/prompts"
 )
 
-var ErrPaused = errors.New("run pausada aguardando aprovação")
+var (
+	ErrPaused     = errors.New("run pausada aguardando aprovação")
+	ErrNeedsInput = errors.New("tarefa precisa de input antes de continuar")
+)
 
 type Options struct {
 	RunID            string
@@ -133,6 +136,9 @@ func (p *Pipeline) Resume(ctx context.Context, runID string, opts Options) (*Res
 	if err != nil {
 		return nil, fmt.Errorf("carregando run %s: %w", runID, err)
 	}
+	if run.Status == "needs_input" {
+		return nil, fmt.Errorf("run %s aguarda input; edite a tarefa na fonte e execute novamente", runID)
+	}
 	if _, err := os.Stat(run.Worktree); err != nil {
 		return nil, fmt.Errorf("worktree %s não encontrada: %w", run.Worktree, err)
 	}
@@ -201,6 +207,13 @@ func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options)
 			res := p.result(run, "pausada")
 			return res, runErr
 		}
+		if errors.Is(runErr, ErrNeedsInput) {
+			run.Status = "needs_input"
+			run.Error = runErr.Error()
+			p.save(run, dir)
+			appendEvent(dir, "run.needs_input", map[string]any{"stage": run.Stage, "error": runErr.Error()})
+			return p.result(run, "aguardando input"), runErr
+		}
 		if errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			run.Status = "canceled"
 			run.Error = runErr.Error()
@@ -234,9 +247,12 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			continue
 		}
 		run.Stage = st.Name
-		if st.Status == "gated" && (st.Name == "requirements" || st.Name == "architect") {
-			gate := "spec"
-			if st.Name == "architect" {
+		if st.Status == "gated" {
+			gate := st.Name
+			switch st.Name {
+			case "requirements":
+				gate = "spec"
+			case "architect":
 				gate = "plan"
 			}
 			if err := p.gate(ctx, run, gate, trace, opts.AutoApprove); err != nil {
@@ -254,16 +270,12 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 
 		var err error
 		switch st.Name {
+		case "intake":
+			err = p.runIntakeStage(ctx, run, trace, budget, opts)
 		case "requirements":
-			err = p.runArtifactStage(ctx, run, trace, "requirements", "spec.md", budget)
-			if err == nil {
-				err = p.gate(ctx, run, "spec", trace, opts.AutoApprove)
-			}
+			err = p.runValidatedStage(ctx, run, trace, "requirements", "spec.md", "spec-validator", "spec", budget, opts)
 		case "architect":
-			err = p.runArtifactStage(ctx, run, trace, "architect", "plan.md", budget)
-			if err == nil {
-				err = p.gate(ctx, run, "plan", trace, opts.AutoApprove)
-			}
+			err = p.runValidatedStage(ctx, run, trace, "architect", "plan.md", "plan-validator", "plan", budget, opts)
 		case "implement":
 			err = p.implement(ctx, run, trace, "", budget)
 		case "test":
@@ -287,6 +299,13 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 				p.save(run, dir)
 				return err
 			}
+			if errors.Is(err, ErrNeedsInput) {
+				st.Status = "needs_input"
+				st.Error = err.Error()
+				p.save(run, dir)
+				appendEvent(dir, "stage.needs_input", map[string]any{"stage": st.Name, "error": err.Error()})
+				return err
+			}
 			st.Status = "failed"
 			st.Error = err.Error()
 			p.save(run, dir)
@@ -302,8 +321,9 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 	return nil
 }
 
-func (p *Pipeline) runArtifactStage(ctx context.Context, run *RunState, trace telemetry.Trace, stage, artifact string, budget float64) error {
+func (p *Pipeline) runArtifactStage(ctx context.Context, run *RunState, trace telemetry.Trace, stage, artifact string, budget float64, feedback string) error {
 	data := p.promptData(run)
+	data.Feedback = feedback
 	prompt, err := p.render(stage, data)
 	if err != nil {
 		return err
@@ -326,6 +346,278 @@ func (p *Pipeline) runArtifactStage(ctx context.Context, run *RunState, trace te
 	}
 	p.mirror(run)
 	return nil
+}
+
+type intakeVerdict struct {
+	Decision   string
+	Risk       string
+	Questions  []string
+	Acceptance []string
+}
+
+func parseIntake(text string) intakeVerdict {
+	verdict := intakeVerdict{}
+	section := ""
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		upper := strings.ToUpper(line)
+		if strings.HasPrefix(upper, "DECISION:") {
+			verdict.Decision = cleanDecision(strings.TrimSpace(line[len("DECISION:"):]))
+			continue
+		}
+		if strings.HasPrefix(upper, "RISK:") {
+			verdict.Risk = cleanDecision(strings.TrimSpace(line[len("RISK:"):]))
+			continue
+		}
+		if strings.HasPrefix(line, "##") {
+			heading := strings.ToLower(strings.TrimSpace(strings.TrimLeft(line, "#")))
+			switch {
+			case strings.Contains(heading, "perguntas"):
+				section = "questions"
+			case strings.Contains(heading, "crit") && strings.Contains(heading, "rio"):
+				section = "acceptance"
+			default:
+				section = ""
+			}
+			continue
+		}
+		if section == "" {
+			continue
+		}
+		item := ""
+		switch {
+		case strings.HasPrefix(line, "- "):
+			item = strings.TrimSpace(line[2:])
+		case strings.HasPrefix(line, "* "):
+			item = strings.TrimSpace(line[2:])
+		}
+		if item == "" || isPlaceholderItem(item) {
+			continue
+		}
+		if section == "questions" {
+			verdict.Questions = append(verdict.Questions, item)
+		} else {
+			verdict.Acceptance = append(verdict.Acceptance, item)
+		}
+	}
+	return verdict
+}
+
+func cleanDecision(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "`*_ ")
+	return strings.ToUpper(value)
+}
+
+func isPlaceholderItem(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return lower == "" || lower == "-" || lower == "n/a" || strings.HasPrefix(lower, "nenhuma") || strings.HasPrefix(lower, "(nenhuma")
+}
+
+func (p *Pipeline) riskyLabels(labels []string) []string {
+	var risky []string
+	for _, label := range labels {
+		for _, configured := range p.Cfg.Intake.RiskLabels {
+			if strings.EqualFold(strings.TrimSpace(label), strings.TrimSpace(configured)) {
+				risky = append(risky, label)
+				break
+			}
+		}
+	}
+	return risky
+}
+
+func (p *Pipeline) writeQuestions(run *RunState, questions, reasons []string) {
+	var builder strings.Builder
+	builder.WriteString("# Perguntas e bloqueios do intake\n\n")
+	seen := map[string]bool{}
+	for _, item := range append(append([]string{}, questions...), reasons...) {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		fmt.Fprintf(&builder, "- %s\n", item)
+	}
+	p.writeWork(run, "questions.md", builder.String())
+}
+
+func (p *Pipeline) runIntakeStage(ctx context.Context, run *RunState, trace telemetry.Trace, budget float64, opts Options) error {
+	if err := p.runArtifactStage(ctx, run, trace, "intake", "intake.md", budget, ""); err != nil {
+		return err
+	}
+	verdict := parseIntake(p.readWork(run, "intake.md"))
+
+	var reasons []string
+	description := strings.TrimSpace(run.Task.Description)
+	descriptionLength := len([]rune(description))
+	if descriptionLength == 0 {
+		reasons = append(reasons, "descrição vazia")
+	} else if descriptionLength < p.Cfg.Intake.MinDescriptionChars {
+		reasons = append(reasons, fmt.Sprintf("descrição curta (%d < %d caracteres)", descriptionLength, p.Cfg.Intake.MinDescriptionChars))
+	}
+	sourceAcceptance := 0
+	for _, criterion := range run.Task.Acceptance {
+		if strings.TrimSpace(criterion) != "" {
+			sourceAcceptance++
+		}
+	}
+	if sourceAcceptance == 0 && len(verdict.Acceptance) == 0 {
+		reasons = append(reasons, "sem critérios de aceite")
+	}
+	if verdict.Decision != "READY" {
+		if verdict.Decision == "" {
+			reasons = append(reasons, "intake não retornou DECISION")
+		} else {
+			reasons = append(reasons, "intake retornou DECISION: "+verdict.Decision)
+		}
+	}
+	if len(verdict.Questions) > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d pergunta(s) aberta(s) no intake", len(verdict.Questions)))
+	}
+	if len(reasons) > 0 {
+		p.writeQuestions(run, verdict.Questions, reasons)
+		p.mirror(run)
+		return fmt.Errorf("%w: %s", ErrNeedsInput, strings.Join(reasons, "; "))
+	}
+
+	risky := p.riskyLabels(run.Task.Labels)
+	riskHigh := strings.EqualFold(verdict.Risk, "HIGH") || len(risky) > 0
+	mode := p.Cfg.Workspace.GateModeFor("intake")
+	if mode == config.GateHuman || (mode == config.GatePolicy && riskHigh) {
+		if opts.AutoApprove {
+			run.Gates["intake"] = "approved"
+			p.save(run, p.runDir(run))
+			appendEvent(p.runDir(run), "gate.approved", map[string]any{"gate": "intake", "mode": "auto"})
+			trace.Event("gate.approved", map[string]any{"gate": "intake", "mode": "auto"})
+			return nil
+		}
+		run.Gates["intake"] = "escalated"
+		reason := "intake requer aprovação humana"
+		if riskHigh {
+			detail := "risco alto"
+			if verdict.Risk != "" {
+				detail = "risco " + verdict.Risk
+			}
+			if len(risky) > 0 {
+				detail += ", labels: " + strings.Join(risky, ", ")
+			}
+			reason += " (" + detail + ")"
+		}
+		appendEvent(p.runDir(run), "gate.escalated", map[string]any{"gate": "intake", "reason": reason})
+		trace.Event("gate.escalated", map[string]any{"gate": "intake", "reason": reason})
+		return fmt.Errorf("%w: %s", ErrPaused, reason)
+	}
+
+	run.Gates["intake"] = "approved"
+	p.save(run, p.runDir(run))
+	appendEvent(p.runDir(run), "gate.approved", map[string]any{"gate": "intake", "mode": string(mode)})
+	trace.Event("gate.approved", map[string]any{"gate": "intake", "mode": string(mode)})
+	return nil
+}
+
+func (p *Pipeline) runValidatedStage(ctx context.Context, run *RunState, trace telemetry.Trace, stage, artifact, validator, gateName string, budget float64, opts Options) error {
+	attempts := p.Cfg.Defaults.MaxGateRounds
+	if attempts < 1 {
+		attempts = 1
+	}
+	feedback := ""
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			_ = os.Remove(p.workArtifact(run, artifact))
+		}
+		if err := p.runArtifactStage(ctx, run, trace, stage, artifact, budget, feedback); err != nil {
+			return err
+		}
+		approved, blockers, err := p.runValidator(ctx, run, trace, stage, validator, budget)
+		if err != nil {
+			return err
+		}
+		if approved {
+			return p.gate(ctx, run, gateName, trace, opts.AutoApprove)
+		}
+		feedback = strings.Join(blockers, "\n")
+		if strings.TrimSpace(feedback) == "" {
+			feedback = "validador rejeitou o artefato sem lista de bloqueios"
+		}
+		appendEvent(p.runDir(run), "validation.rejected", map[string]any{
+			"stage":    stage,
+			"attempt":  attempt,
+			"blockers": blockers,
+		})
+		trace.Event("validation.rejected", map[string]any{"stage": stage, "attempt": attempt})
+	}
+	run.Gates[gateName] = "escalated"
+	p.save(run, p.runDir(run))
+	appendEvent(p.runDir(run), "gate.escalated", map[string]any{"gate": gateName, "reason": "validação automática falhou"})
+	trace.Event("gate.escalated", map[string]any{"gate": gateName})
+	return fmt.Errorf("%w: %s não passou na validação após %d tentativa(s); aprove manualmente", ErrPaused, artifact, attempts)
+}
+
+func (p *Pipeline) runValidator(ctx context.Context, run *RunState, trace telemetry.Trace, targetStage, validator string, budget float64) (bool, []string, error) {
+	data := p.promptData(run)
+	prompt, err := p.render(validator, data)
+	if err != nil {
+		return false, nil, err
+	}
+	engineName, model := p.engineFor(run, targetStage)
+	res, err := p.callEngineNamed(ctx, run, trace, targetStage, validator, engineName, model, prompt, budget)
+	if err != nil {
+		return false, nil, err
+	}
+	p.writeWork(run, validator+".output.md", res.Output+"\n")
+	artifact := validatorArtifact(validator)
+	artifactPath := p.workArtifact(run, artifact)
+	if _, statErr := os.Stat(artifactPath); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return false, nil, statErr
+		}
+		if strings.TrimSpace(res.Output) == "" {
+			return false, nil, fmt.Errorf("%s não gerou %s nem retornou saída", validator, artifact)
+		}
+		p.writeWork(run, artifact, res.Output+"\n")
+	}
+	p.mirror(run)
+	approved, blockers := parseValidatorDecision(p.readWork(run, artifact))
+	return approved, blockers, nil
+}
+
+func parseValidatorDecision(text string) (bool, []string) {
+	approved := false
+	decisionSeen := false
+	var blockers []string
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		line = strings.TrimPrefix(line, "- ")
+		line = strings.TrimPrefix(line, "* ")
+		upper := strings.ToUpper(line)
+		if strings.HasPrefix(upper, "DECISION:") {
+			decisionSeen = true
+			value := cleanDecision(strings.TrimSpace(line[len("DECISION:"):]))
+			approved = value == "APPROVED"
+			continue
+		}
+		if strings.HasPrefix(upper, "BLOCKING:") {
+			blockers = append(blockers, line)
+		}
+	}
+	if !decisionSeen {
+		blockers = append(blockers, "validador não retornou DECISION")
+	} else if !approved && len(blockers) == 0 {
+		blockers = append(blockers, "validador rejeitou sem BLOCKING detalhado")
+	}
+	return approved && len(blockers) == 0, blockers
+}
+
+func validatorArtifact(validator string) string {
+	switch validator {
+	case "spec-validator":
+		return "spec-review.md"
+	case "plan-validator":
+		return "plan-review.md"
+	default:
+		return validator + ".md"
+	}
 }
 
 func (p *Pipeline) implement(ctx context.Context, run *RunState, trace telemetry.Trace, feedback string, budget float64) error {
@@ -570,8 +862,17 @@ func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Wor
 }
 
 func (p *Pipeline) gate(ctx context.Context, run *RunState, name string, trace telemetry.Trace, autoApprove bool) error {
-	if !p.Cfg.Workspace.GateEnabled(name) {
-		return nil
+	mode := p.Cfg.Workspace.GateModeFor(name)
+	forced := run.Gates[name] == "escalated"
+	if !forced {
+		switch mode {
+		case config.GateAuto, config.GateOff, config.GatePolicy:
+			run.Gates[name] = "approved"
+			p.save(run, p.runDir(run))
+			appendEvent(p.runDir(run), "gate.approved", map[string]any{"gate": name, "mode": string(mode)})
+			trace.Event("gate.approved", map[string]any{"gate": name, "mode": string(mode)})
+			return nil
+		}
 	}
 	if run.Gates[name] == "approved" {
 		return nil
@@ -603,6 +904,10 @@ func (p *Pipeline) gate(ctx context.Context, run *RunState, name string, trace t
 }
 
 func (p *Pipeline) callEngine(ctx context.Context, run *RunState, trace telemetry.Trace, stage, engineName, model, prompt string, budget float64) (engine.Result, error) {
+	return p.callEngineNamed(ctx, run, trace, stage, stage, engineName, model, prompt, budget)
+}
+
+func (p *Pipeline) callEngineNamed(ctx context.Context, run *RunState, trace telemetry.Trace, billingStage, displayName, engineName, model, prompt string, budget float64) (engine.Result, error) {
 	if budget > 0 && run.Usage.CostUSD >= budget {
 		return engine.Result{}, fmt.Errorf("orçamento de US$ %.2f excedido (gasto atual US$ %.2f)", budget, run.Usage.CostUSD)
 	}
@@ -620,10 +925,10 @@ func (p *Pipeline) callEngine(ctx context.Context, run *RunState, trace telemetr
 	if err != nil {
 		return engine.Result{}, err
 	}
-	span := trace.Span("stage."+stage, prompt)
+	span := trace.Span("stage."+displayName, prompt)
 	start := time.Now()
 	res, err := eng.Run(ctx, engine.Request{
-		Stage:   stage,
+		Stage:   displayName,
 		Prompt:  prompt,
 		Workdir: run.Worktree,
 		Model:   model,
@@ -635,7 +940,7 @@ func (p *Pipeline) callEngine(ctx context.Context, run *RunState, trace telemetr
 		level = "ERROR"
 	}
 	span.Generation(telemetry.Generation{
-		Name:   stage,
+		Name:   displayName,
 		Model:  model,
 		Input:  prompt,
 		Output: res.Output,
@@ -655,14 +960,15 @@ func (p *Pipeline) callEngine(ctx context.Context, run *RunState, trace telemetr
 	})
 	span.End(res.Output, err)
 	run.Usage = run.Usage.Add(res.Usage)
-	if st := run.stage(stage); st != nil {
+	if st := run.stage(billingStage); st != nil {
 		st.Engine = engineName
 		st.Model = model
 		st.CostUSD += res.Usage.CostUSD
 	}
 	p.save(run, p.runDir(run))
 	appendEvent(p.runDir(run), "engine.call", map[string]any{
-		"stage":         stage,
+		"stage":         billingStage,
+		"step":          displayName,
 		"engine":        engineName,
 		"model":         model,
 		"cost_usd":      res.Usage.CostUSD,
@@ -689,17 +995,21 @@ func (p *Pipeline) engineFor(run *RunState, stage string) (string, string) {
 
 func (p *Pipeline) promptData(run *RunState) prompts.Data {
 	return prompts.Data{
-		Task:          run.Task,
-		Repo:          run.Repo,
-		Worktree:      run.Worktree,
-		RunDir:        p.runDir(run),
-		SpecPath:      p.workArtifact(run, "spec.md"),
-		PlanPath:      p.workArtifact(run, "plan.md"),
-		ImplementPath: p.workArtifact(run, "implement.md"),
-		ReviewPath:    p.workArtifact(run, "review.md"),
-		DiffPath:      p.workArtifact(run, "diff.patch"),
-		TestLogPath:   p.workArtifact(run, "test.log"),
-		TestCommands:  p.Cfg.Workspace.TestCommands,
+		Task:           run.Task,
+		Repo:           run.Repo,
+		Worktree:       run.Worktree,
+		RunDir:         p.runDir(run),
+		IntakePath:     p.workArtifact(run, "intake.md"),
+		QuestionsPath:  p.workArtifact(run, "questions.md"),
+		SpecPath:       p.workArtifact(run, "spec.md"),
+		SpecReviewPath: p.workArtifact(run, "spec-review.md"),
+		PlanPath:       p.workArtifact(run, "plan.md"),
+		PlanReviewPath: p.workArtifact(run, "plan-review.md"),
+		ImplementPath:  p.workArtifact(run, "implement.md"),
+		ReviewPath:     p.workArtifact(run, "review.md"),
+		DiffPath:       p.workArtifact(run, "diff.patch"),
+		TestLogPath:    p.workArtifact(run, "test.log"),
+		TestCommands:   p.Cfg.Workspace.TestCommands,
 	}
 }
 
@@ -893,6 +1203,9 @@ func truncateForPrompt(value string, max int) string {
 }
 
 func isInteractive() bool {
+	if os.Getenv("AIW_NONINTERACTIVE") == "1" {
+		return false
+	}
 	info, err := os.Stdin.Stat()
 	if err != nil {
 		return false

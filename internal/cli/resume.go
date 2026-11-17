@@ -30,6 +30,9 @@ func newResumeCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if run.Status == "needs_input" {
+				return fmt.Errorf("run %s aguarda input; edite a tarefa na fonte e execute novamente", run.ID)
+			}
 			store, err := state.Open(cfg.StateDir())
 			if err != nil {
 				return err

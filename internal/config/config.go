@@ -59,8 +59,60 @@ type Defaults struct {
 	BudgetUSD       float64  `yaml:"budget_usd"`
 	MaxTestRetries  int      `yaml:"max_test_retries"`
 	MaxReviewRounds int      `yaml:"max_review_rounds"`
+	MaxGateRounds   int      `yaml:"max_gate_rounds"`
 	Workers         int      `yaml:"workers"`
 	ClaimTTL        Duration `yaml:"claim_ttl"`
+}
+
+type GateMode string
+
+const (
+	GateAuto   GateMode = "auto"
+	GateHuman  GateMode = "human"
+	GatePolicy GateMode = "policy"
+	GateOff    GateMode = "off"
+)
+
+func (g *GateMode) UnmarshalYAML(node *yaml.Node) error {
+	switch strings.ToLower(strings.TrimSpace(node.Value)) {
+	case "off":
+		*g = GateOff
+		return nil
+	case "on":
+		*g = GateHuman
+		return nil
+	}
+	var enabled bool
+	if err := node.Decode(&enabled); err == nil {
+		if enabled {
+			*g = GateHuman
+		} else {
+			*g = GateAuto
+		}
+		return nil
+	}
+	var text string
+	if err := node.Decode(&text); err == nil {
+		switch strings.ToLower(strings.TrimSpace(text)) {
+		case "auto":
+			*g = GateAuto
+		case "human":
+			*g = GateHuman
+		case "policy":
+			*g = GatePolicy
+		case "off":
+			*g = GateOff
+		default:
+			return fmt.Errorf("gate inválido %q (use auto, human, policy ou off)", text)
+		}
+		return nil
+	}
+	return fmt.Errorf("valor de gate inválido")
+}
+
+type IntakeConfig struct {
+	RiskLabels          []string `yaml:"risk_labels"`
+	MinDescriptionChars int      `yaml:"min_description_chars"`
 }
 
 type StageConfig struct {
@@ -111,22 +163,27 @@ func (s SourceConfig) WriteBackEnabled() bool {
 }
 
 type WorkspaceConfig struct {
-	DefaultRepo        string            `yaml:"default_repo"`
-	RepoMap            map[string]string `yaml:"repo_map"`
-	TestCommands       []string          `yaml:"test_commands"`
-	Gates              map[string]bool   `yaml:"gates"`
-	MaxTestConcurrency int               `yaml:"max_test_concurrency"`
+	DefaultRepo        string              `yaml:"default_repo"`
+	RepoMap            map[string]string   `yaml:"repo_map"`
+	TestCommands       []string            `yaml:"test_commands"`
+	Gates              map[string]GateMode `yaml:"gates"`
+	MaxTestConcurrency int                 `yaml:"max_test_concurrency"`
 }
 
-func (w WorkspaceConfig) GateEnabled(name string) bool {
-	if w.Gates == nil {
-		return true
+func (w WorkspaceConfig) GateModeFor(name string) GateMode {
+	if w.Gates != nil {
+		if mode, ok := w.Gates[name]; ok {
+			return mode
+		}
 	}
-	enabled, ok := w.Gates[name]
-	if !ok {
-		return true
+	switch name {
+	case "intake":
+		return GatePolicy
+	case "spec", "plan":
+		return GateAuto
+	default:
+		return GateAuto
 	}
-	return enabled
 }
 
 type Config struct {
@@ -137,6 +194,7 @@ type Config struct {
 	Sources       map[string]SourceConfig `yaml:"sources"`
 	DefaultSource string                  `yaml:"default_source"`
 	Workspace     WorkspaceConfig         `yaml:"workspace"`
+	Intake        IntakeConfig            `yaml:"intake"`
 
 	Path string `yaml:"-"`
 	Root string `yaml:"-"`
@@ -225,6 +283,9 @@ func (c *Config) applyDefaults() {
 	if c.Defaults.MaxReviewRounds == 0 {
 		c.Defaults.MaxReviewRounds = 2
 	}
+	if c.Defaults.MaxGateRounds == 0 {
+		c.Defaults.MaxGateRounds = 2
+	}
 	if c.Defaults.Workers == 0 {
 		c.Defaults.Workers = 2
 	}
@@ -274,6 +335,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Workspace.MaxTestConcurrency == 0 {
 		c.Workspace.MaxTestConcurrency = 1
+	}
+	if c.Intake.RiskLabels == nil {
+		c.Intake.RiskLabels = []string{"risk:high", "security", "db-migration"}
+	}
+	if c.Intake.MinDescriptionChars == 0 {
+		c.Intake.MinDescriptionChars = 10
 	}
 }
 
@@ -393,10 +460,13 @@ defaults:
   budget_usd: 5.00
   max_test_retries: 1
   max_review_rounds: 2
+  max_gate_rounds: 2
   workers: 2
   claim_ttl: 2h
 
 stages:
+  intake:
+    engine: claude
   requirements:
     engine: claude
   architect:
@@ -428,8 +498,13 @@ workspace:
   test_commands: []
   max_test_concurrency: 1
   gates:
-    spec: true
-    plan: true
+    intake: policy
+    spec: auto
+    plan: auto
+
+intake:
+  risk_labels: ["risk:high", "security", "db-migration"]
+  min_description_chars: 10
 `
 
 func WriteDefault(root string, force bool) (string, error) {

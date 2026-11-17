@@ -14,6 +14,9 @@ Critérios de aceite fornecidos:
 Repositório: {{.Repo}}
 Diretório de trabalho: {{.Worktree}}
 
+Leia primeiro o intake: {{.IntakePath}}
+Use os critérios de aceite e o escopo do intake como fonte de verdade.
+
 Sua função é transformar a tarefa em uma especificação implementável, analisando o código existente quando necessário.
 
 Regras:
@@ -23,4 +26,8 @@ Regras:
 - Estrutura obrigatória do arquivo: Contexto, Objetivo, Escopo, Fora de escopo, Critérios de aceite verificáveis, Perguntas abertas.
 - Cada critério de aceite deve ser verificável por comando, comportamento observável ou teste.
 - Registre ambiguidades em Perguntas abertas; não invente requisitos.
+{{if .Feedback}}
+Feedback do validador anterior (corrija todos os pontos):
+{{.Feedback}}
+{{end}}
 - Responda em português.

@@ -34,7 +34,7 @@ func newStatusCommand(opts *rootOptions) *cobra.Command {
 			fmt.Fprintf(out, "repo:     %s\n", run.Repo)
 			fmt.Fprintf(out, "branch:   %s\n", run.Branch)
 			fmt.Fprintf(out, "worktree: %s\n", run.Worktree)
-			fmt.Fprintf(out, "custo:    US$ %.2f (%d in / %d out tokens)\n", run.Usage.CostUSD, run.Usage.InputTokens, run.Usage.OutputTokens)
+			fmt.Fprintf(out, "custo:    US$ %.4f (%d in / %d out tokens)\n", run.Usage.CostUSD, run.Usage.InputTokens, run.Usage.OutputTokens)
 			if run.PRURL != "" {
 				fmt.Fprintf(out, "PR:       %s\n", run.PRURL)
 			}
@@ -42,13 +42,13 @@ func newStatusCommand(opts *rootOptions) *cobra.Command {
 				fmt.Fprintf(out, "erro:     %s\n", run.Error)
 			}
 			fmt.Fprintf(out, "artefatos: %s\n", filepath.Join(cfg.RunsDir(), run.ID))
-			fmt.Fprintf(out, "gates:    spec=%s plan=%s\n", run.Gates["spec"], run.Gates["plan"])
+			fmt.Fprintf(out, "gates:    intake=%s spec=%s plan=%s\n", run.Gates["intake"], run.Gates["spec"], run.Gates["plan"])
 
 			fmt.Fprintln(out)
 			writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 			fmt.Fprintln(writer, "ESTÁGIO\tSTATUS\tENGINE\tRODADAS\tCUSTO")
 			for _, stage := range run.Stages {
-				fmt.Fprintf(writer, "%s\t%s\t%s\t%d\tUS$ %.2f\n", stage.Name, stage.Status, stage.Engine, stage.Rounds, stage.CostUSD)
+				fmt.Fprintf(writer, "%s\t%s\t%s\t%d\tUS$ %.4f\n", stage.Name, stage.Status, stage.Engine, stage.Rounds, stage.CostUSD)
 			}
 			writer.Flush()
 

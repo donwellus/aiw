@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -87,8 +88,21 @@ func newRunCommand(opts *rootOptions) *cobra.Command {
 				if outcome.Reason != "" {
 					fmt.Fprintf(output, "%s\n", outcome.Reason)
 				}
-				fmt.Fprintf(output, "aprove com: aiw approve %s <spec|plan>\n", outcome.RunID)
+				fmt.Fprintf(output, "aprove com: aiw approve %s <intake|spec|plan>\n", outcome.RunID)
 				fmt.Fprintf(output, "depois rode: aiw resume %s\n", outcome.RunID)
+				return nil
+			case "needs_input":
+				runDir := outcome.RunDir
+				if runDir == "" {
+					runDir = filepath.Join(cfg.RunsDir(), outcome.RunID)
+				}
+				fmt.Fprintf(output, "run %s aguardando input\n", outcome.RunID)
+				fmt.Fprintf(output, "perguntas: %s\n", filepath.Join(runDir, "questions.md"))
+				fmt.Fprintf(output, "intake: %s\n", filepath.Join(runDir, "intake.md"))
+				if outcome.Reason != "" {
+					fmt.Fprintf(output, "%s\n", outcome.Reason)
+				}
+				fmt.Fprintf(output, "edite a tarefa na fonte e execute novamente\n")
 				return nil
 			case "canceled":
 				fmt.Fprintf(output, "run %s cancelada\n", outcome.RunID)

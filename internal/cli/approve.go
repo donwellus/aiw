@@ -23,8 +23,10 @@ func newApproveCommand(opts *rootOptions) *cobra.Command {
 				return err
 			}
 			gate := args[1]
-			if gate != "spec" && gate != "plan" {
-				return fmt.Errorf("gate inválido %q (use spec ou plan)", gate)
+			switch gate {
+			case "intake", "spec", "plan":
+			default:
+				return fmt.Errorf("gate inválido %q (use intake, spec ou plan)", gate)
 			}
 			if run.Gates == nil {
 				run.Gates = map[string]string{}

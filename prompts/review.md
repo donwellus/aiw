@@ -4,6 +4,7 @@ Tarefa: {{.Task.ExternalID}} - {{.Task.Title}}
 Diretório de trabalho: {{.Worktree}}
 
 Leia:
+- Intake: {{.IntakePath}}
 - Especificação: {{.SpecPath}}
 - Plano: {{.PlanPath}}
 - Resumo da implementação: {{.ImplementPath}}

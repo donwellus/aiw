@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -58,9 +59,6 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 			cfg, err := opts.load()
 			if err != nil {
 				return err
-			}
-			if !auto {
-				return errors.New("aiw work exige --auto nesta fase: gates interativos não são suportados no pool")
 			}
 			if workers == 0 {
 				workers = cfg.Defaults.Workers
@@ -193,7 +191,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&repoFlag, "repo", "", "repositório alvo (sobrepõe a tarefa)")
 	cmd.Flags().StringVar(&engineName, "engine", "", "engine para todos os estágios")
 	cmd.Flags().Float64Var(&budget, "budget", 0, "orçamento por tarefa em USD")
-	cmd.Flags().BoolVar(&auto, "auto", false, "aprova gates automaticamente (obrigatório)")
+	cmd.Flags().BoolVar(&auto, "auto", false, "aprova gates automaticamente (sobrepõe política/humano)")
 	cmd.Flags().BoolVar(&force, "force", false, "ignora deduplicação de tarefas concluídas/pausadas")
 	cmd.Flags().BoolVar(&createPR, "pr", false, "faz push e cria PR com gh")
 	cmd.Flags().BoolVar(&noWriteBack, "no-write-back", false, "não atualiza o estado na fonte")
@@ -243,7 +241,9 @@ func printWorkOutcome(out io.Writer, asJSON bool, outcome runner.Outcome) {
 		}
 		fmt.Fprintf(out, "[%s] falhou stage=%s run=%s erro=%s\n", outcome.TaskID, outcome.Stage, outcome.RunID, message)
 	case "paused":
-		fmt.Fprintf(out, "[%s] pausada run=%s (não esperado com --auto)\n", outcome.TaskID, outcome.RunID)
+		fmt.Fprintf(out, "[%s] pausada run=%s artefatos=%s\n", outcome.TaskID, outcome.RunID, outcome.RunDir)
+	case "needs_input":
+		fmt.Fprintf(out, "[%s] needs_input run=%s perguntas=%s\n", outcome.TaskID, outcome.RunID, filepath.Join(outcome.RunDir, "questions.md"))
 	case "canceled":
 		fmt.Fprintf(out, "[%s] cancelada run=%s\n", outcome.TaskID, outcome.RunID)
 	case "skipped", "busy":

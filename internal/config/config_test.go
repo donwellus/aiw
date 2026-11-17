@@ -33,8 +33,17 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DefaultSource != "folder" {
 		t.Fatalf("fonte padrão = %q", cfg.DefaultSource)
 	}
-	if !cfg.Workspace.GateEnabled("spec") {
-		t.Fatal("gate spec deveria estar habilitado por padrão")
+	if cfg.Workspace.GateModeFor("spec") != GateAuto {
+		t.Fatalf("gate spec = %s, esperado auto", cfg.Workspace.GateModeFor("spec"))
+	}
+	if cfg.Workspace.GateModeFor("intake") != GatePolicy {
+		t.Fatalf("gate intake = %s, esperado policy", cfg.Workspace.GateModeFor("intake"))
+	}
+	if cfg.Defaults.MaxGateRounds != 2 {
+		t.Fatalf("max_gate_rounds = %d", cfg.Defaults.MaxGateRounds)
+	}
+	if cfg.Intake.MinDescriptionChars != 10 {
+		t.Fatalf("min_description_chars = %d", cfg.Intake.MinDescriptionChars)
 	}
 }
 
@@ -82,11 +91,11 @@ workspace:
 	if cfg.Telemetry.Host != "http://example.test" {
 		t.Fatalf("host = %q", cfg.Telemetry.Host)
 	}
-	if cfg.Workspace.GateEnabled("spec") {
-		t.Fatal("gate spec deveria estar desabilitado")
+	if cfg.Workspace.GateModeFor("spec") != GateAuto {
+		t.Fatal("gate spec false deveria virar auto")
 	}
-	if !cfg.Workspace.GateEnabled("plan") {
-		t.Fatal("gate plan deveria continuar habilitado")
+	if cfg.Workspace.GateModeFor("plan") != GateAuto {
+		t.Fatal("gate plan ausente deveria ser auto")
 	}
 }
 
@@ -134,5 +143,73 @@ func TestWriteDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("config não existe: %v", err)
+	}
+}
+
+func TestGateModeParsing(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `engines:
+  fake:
+    driver: fake
+defaults:
+  engine: fake
+sources:
+  folder:
+    driver: folder
+default_source: folder
+workspace:
+  gates:
+    intake: policy
+    spec: human
+    plan: auto
+    review: off
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Workspace.GateModeFor("intake") != GatePolicy {
+		t.Fatalf("intake = %s", cfg.Workspace.GateModeFor("intake"))
+	}
+	if cfg.Workspace.GateModeFor("spec") != GateHuman {
+		t.Fatalf("spec = %s", cfg.Workspace.GateModeFor("spec"))
+	}
+	if cfg.Workspace.GateModeFor("plan") != GateAuto {
+		t.Fatalf("plan = %s", cfg.Workspace.GateModeFor("plan"))
+	}
+	if cfg.Workspace.GateModeFor("review") != GateOff {
+		t.Fatalf("review = %s", cfg.Workspace.GateModeFor("review"))
+	}
+}
+
+func TestGateModeInvalid(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, DefaultConfigPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `engines:
+  fake: {driver: fake}
+defaults:
+  engine: fake
+sources:
+  folder: {driver: folder}
+default_source: folder
+workspace:
+  gates:
+    spec: qualquer
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root, ""); err == nil {
+		t.Fatal("esperava erro para gate inválido")
 	}
 }

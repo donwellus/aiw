@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -78,8 +79,17 @@ func (r *Runner) Check(task *source.Task, force bool) (Outcome, bool) {
 	case "paused":
 		out.Status = "paused"
 		out.RunID = record.RunID
+		out.RunDir = filepath.Join(r.cfg.RunsDir(), record.RunID)
 		out.Reason = fmt.Sprintf("pausada na run %s; use aiw resume %s", record.RunID, record.RunID)
 		return out, true
+	case "needs_input":
+		if record.ContentHash == task.ContentHash {
+			out.Status = "needs_input"
+			out.RunID = record.RunID
+			out.RunDir = filepath.Join(r.cfg.RunsDir(), record.RunID)
+			out.Reason = "aguardando input; edite a tarefa na fonte e execute novamente"
+			return out, true
+		}
 	}
 	return out, false
 }
@@ -159,6 +169,8 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		out.Status = "succeeded"
 	case errors.Is(runErr, pipeline.ErrPaused):
 		out.Status = "paused"
+	case errors.Is(runErr, pipeline.ErrNeedsInput):
+		out.Status = "needs_input"
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
 		out.Status = "canceled"
 	default:
@@ -176,6 +188,8 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		record.Status = "succeeded"
 	case "paused":
 		record.Status = "paused"
+	case "needs_input":
+		record.Status = "needs_input"
 	case "canceled":
 		record.Status = "todo"
 	default:

@@ -39,10 +39,16 @@ flowchart LR
     end
 
     subgraph pipeline["Pipeline determinístico"]
-        I["Intake<br/>task.json"] --> R["Requirements<br/>spec.md"]
-        R --> G1{"Gate spec"}
+        I["Intake + DoR<br/>intake.md"] --> G0{"Policy intake"}
+        G0 -->|"ready"| R["Requirements<br/>spec.md"]
+        G0 -->|"needs_input/risco"| H["Aguardando input<br/>ou gate humano"]
+        R --> SV["Validador spec"]
+        SV -->|"BLOCKING"| R
+        SV -->|"ok"| G1{"Gate spec"}
         G1 --> A["Architect<br/>plan.md"]
-        A --> G2{"Gate plan"}
+        A --> PV["Validador plan"]
+        PV -->|"BLOCKING"| A
+        PV -->|"ok"| G2{"Gate plan"}
         G2 --> D["Implement"]
         D --> T["Test<br/>test.log"]
         T --> V["Review<br/>review.md"]
@@ -80,14 +86,15 @@ flowchart TB
 
 ## Pipeline
 
-1. **requirements** → `spec.md` + gate humano
-2. **architect** → `plan.md` + gate humano
+0. **intake** → `intake.md`/`questions.md` + DoR + política (auto, `needs_input` ou humano)
+1. **requirements** → `spec.md` + validador automático (`spec-review.md`) + gate
+2. **architect** → `plan.md` + validador automático (`plan-review.md`) + gate
 3. **implement** → alterações no worktree isolado
 4. **test** → `test.log` com os comandos reais do projeto
 5. **review** → `review.md` com loop de correção (máx. 2)
 6. **deliver** → commit na branch `aiw/<run-id>` (+ PR com `--pr`)
 
-Artefatos ficam em `.aiw/runs/<run-id>/` e o estado em `run.json`; eventos em `events.jsonl`. O write-back move a tarefa para `done`/`failed` na fonte.
+Artefatos ficam em `.aiw/runs/<run-id>/` e o estado em `run.json`; eventos em `events.jsonl`. O write-back move a tarefa para `done`/`failed` na fonte; `needs_input` mantém a tarefa no inbox.
 
 ## Requisitos
 
@@ -134,11 +141,12 @@ aiw resume <run-id>
 | `aiw sync` | busca tarefas e grava snapshots em `.aiw/queue/` |
 | `aiw list [--eligible] [--status] [--json]` | lista tarefas e seus status locais |
 | `aiw run --task <path\|source:id>` | executa o pipeline para uma tarefa |
-| `aiw work --workers N --auto` | processa tarefas elegíveis em paralelo |
+| `aiw work --workers N [--auto]` | processa tarefas elegíveis em paralelo |
+| `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
 | `aiw status <run-id>` | estado, estágios, custo e eventos |
-| `aiw approve <run-id> <gate>` | aprova `spec` ou `plan` |
+| `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 
 Flags úteis de `run`: `--repo`, `--engine`, `--auto`, `--budget`, `--pr`, `--force`, `--no-write-back`.
@@ -157,12 +165,21 @@ aiw release <run-id>
 - O estado fica por tarefa em `.aiw/state/tasks` (migra automaticamente o antigo `tasks.json`).
 - Cada worker usa seu próprio worktree/branch; falha em uma tarefa não interrompe as outras.
 - Limites: `--workers` global, `max_concurrency` por engine e `max_test_concurrency` por repositório.
-- Nesta fase os gates exigem `--auto`; intake e gates policy-based vêm na próxima fase.
-- Saída: uma linha por tarefa (`ok`, `falhou`, `ignorada`, `cancelada`); `--json` emite JSONL.
+- Tarefas de risco/`needs_input` pausam ou saem da fila sem derrubar os outros workers; `--auto` sobrepõe gates humanos.
+- Saída: uma linha por tarefa (`ok`, `falhou`, `needs_input`, `ignorada`, `cancelada`); `--json` emite JSONL.
 - Ctrl+C para de enfileirar, cancela runs em andamento, libera claims e devolve tarefas canceladas para `todo`.
 - `aiw release` serve para runs que morreram sem liberar o claim/estado.
 
-Limitações atuais do pool: `tasks/` é local ao clone; um daemon (`aiw daemon`) com polling e um intake com perguntas automáticas ficam nas próximas fases.
+Limitações atuais do pool: `tasks/` é local ao clone; o daemon (`aiw daemon`) com polling e a pasta `doing` opcional ficam para a próxima fase.
+
+### Intake e gates automáticos
+
+- **DoR**: descrição mínima, critérios de aceite (do source ou propostos no intake) e perguntas abertas.
+- O agente de intake grava `intake.md` e `questions.md` e termina com `DECISION: READY|NEEDS_INPUT` e `RISK: LOW|MEDIUM|HIGH`.
+- **Política**: `needs_input` para tarefa incompleta; risco alto ou labels como `risk:high`, `security`, `db-migration` escalam para humano; caso contrário segue automático.
+- `needs_input` não é falha: a tarefa fica no inbox, o claim é liberado e o estado aparece em `aiw list --status needs_input`. Edite a tarefa na fonte (o hash muda) e rode novamente.
+- **Spec/plan**: validadores com contexto limpo, até `max_gate_rounds` tentativas de correção. Se continuar reprovando, o gate escala para humano (`aiw approve` + `aiw resume`).
+- `--auto` aprova gates humanos (inclusive risco no intake); falhas de validação automática após `max_gate_rounds` continuam escalando para revisão.
 
 ## Configuração
 
@@ -190,10 +207,12 @@ defaults:
   budget_usd: 5.00
   max_test_retries: 1
   max_review_rounds: 2
+  max_gate_rounds: 2
   workers: 2
   claim_ttl: 2h
 
 stages:
+  intake:       {engine: claude}
   requirements: {engine: claude}
   architect:    {engine: claude}
   implement:    {engine: opencode}
@@ -221,7 +240,14 @@ workspace:
   default_repo: .
   test_commands: ["go test ./..."]
   max_test_concurrency: 1
-  gates: {spec: true, plan: true}
+  gates:
+    intake: policy
+    spec: auto
+    plan: auto
+
+intake:
+  risk_labels: ["risk:high", "security", "db-migration"]
+  min_description_chars: 10
 ```
 
 Precedência de engine: `--engine` > `stages.<estágio>.engine` > `defaults.engine`.
@@ -331,7 +357,7 @@ docs/adr             decisões de arquitetura
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 
-O smoke test usa o engine `fake`: valida o pipeline inteiro sem LLM, sem rede e sem custo. O `make verify` usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente e cancelamento.
+O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento e o ciclo `needs_input` → edição → reprocessamento.
 
 ## Licença
 
@@ -344,5 +370,6 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - Fonte apenas `folder`; conectores remotos são o próximo passo (GitHub → Linear → Jira → Trello).
 - Evals ainda em tests de integração; a suíte `aiw eval` com tarefas golden é o próximo marco.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) virão nas próximas fases.
-- Gates no pool exigem `--auto`; o intake com DoR/perguntas automáticas é o próximo passo.
+- Daemon contínuo (`aiw daemon`) e pasta `doing` opcional são o próximo passo.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
+- `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.

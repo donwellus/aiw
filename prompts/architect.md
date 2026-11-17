@@ -4,7 +4,9 @@ Tarefa: {{.Task.ExternalID}} - {{.Task.Title}}
 Repositório: {{.Repo}}
 Diretório de trabalho: {{.Worktree}}
 
-Leia a especificação antes de começar: {{.SpecPath}}
+Leia antes de começar:
+- Intake: {{.IntakePath}}
+- Especificação: {{.SpecPath}}
 
 Sua função é produzir um plano técnico implementável a partir da especificação.
 
@@ -15,4 +17,8 @@ Regras:
 - Estrutura obrigatória do arquivo: Abordagem, Arquivos afetados, Passos de implementação, Estratégia de testes, Riscos, Decisões.
 - Em Decisões, registre trade-offs relevantes; se houver decisão arquitetural significativa, crie também {{.PlanPath}}.adr.md com contexto, decisão e consequências.
 - O plano deve ser específico o suficiente para outro agente implementar sem adivinhar.
+{{if .Feedback}}
+Feedback do validador anterior (corrija todos os pontos):
+{{.Feedback}}
+{{end}}
 - Responda em português.

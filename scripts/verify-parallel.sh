@@ -4,7 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 AIW="$ROOT/bin/aiw"
 WORK="$(mktemp -d /tmp/aiw-verify.XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+  if [ "${AIW_VERIFY_KEEP:-0}" = "1" ]; then
+    echo "workdir preservado: $WORK"
+  else
+    rm -rf "$WORK"
+  fi
+}
+trap cleanup EXIT
 
 if [ ! -x "$AIW" ]; then
   make -C "$ROOT" build >/dev/null
@@ -40,6 +47,21 @@ set -eu
 stage="${1:-unknown}"
 sleep "${AIW_SLOW_SECONDS:-0.3}"
 case "$stage" in
+  intake)
+    printf '%s\n' \
+      '# Intake' \
+      '## Resumo' \
+      'Tarefa pronta.' \
+      '## Critérios de aceite' \
+      '- O pipeline conclui a tarefa.' \
+      '## Perguntas abertas' \
+      '## Decisão' \
+      'DECISION: READY' \
+      'RISK: LOW'
+    ;;
+  spec-validator|plan-validator)
+    echo "DECISION: APPROVED"
+    ;;
   implement)
     printf 'change %s\n' "$(basename "$PWD")" >> AIW_CHANGE.md
     echo "implemented"
@@ -109,7 +131,7 @@ acceptance:
   - O pipeline conclui a tarefa.
 ---
 
-$title
+Implementar a tarefa "$title" com validação automática do pipeline.
 EOF
 }
 
@@ -153,7 +175,7 @@ assert_eq "$RUNNING" 0 "estados running remanescentes"
 assert_eq "$BRANCHES" 8 "branches aiw/*"
 assert_eq "$WORKTREES" 8 "worktrees"
 
-for name in spec.md plan.md implement.md test.log diff.patch review.md; do
+for name in intake.md spec.md spec-review.md plan.md plan-review.md implement.md test.log diff.patch review.md; do
   COUNT=$(find "$DIR/.aiw/runs" -name "$name" | wc -l | tr -d ' ')
   assert_eq "$COUNT" 8 "artefato $name por run"
 done
@@ -256,5 +278,54 @@ CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' 
 assert_eq "$DONE" 2 "tarefas concluídas após rerun"
 assert_eq "$CLAIMS" 0 "claims após rerun"
 pass "cancelamento: claims liberados, tarefas reexecutadas"
+
+# 4) Intake: needs_input, perguntas e reprocessamento após editar a tarefa.
+DIR="$WORK/needs-input"
+new_project "$DIR"
+cat > "$DIR/tasks/needs.md" <<'TASK'
+---
+id: needs
+title: Tarefa sem contexto
+repo: .
+labels: [aiw]
+acceptance:
+  - O pipeline conclui a tarefa.
+---
+curta
+TASK
+
+export AIW_SLOW_SECONDS=0.1
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+NEEDS=$(grep -c '"status":"needs_input"' "$DIR/out.jsonl" || true)
+SUCCEEDED=$(grep -c '"status":"succeeded"' "$DIR/out.jsonl" || true)
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+RUN_DIR=$(find "$DIR/.aiw/runs" -mindepth 1 -maxdepth 1 -type d | head -1)
+assert_eq "$NEEDS" 1 "tarefa marcada needs_input"
+assert_eq "$SUCCEEDED" 0 "nenhuma tarefa concluída com input faltando"
+assert_eq "$DONE" 0 "nada em done com input faltando"
+assert_eq "$CLAIMS" 0 "claims após needs_input"
+[ -f "$RUN_DIR/questions.md" ] || fail "questions.md não foi criado"
+
+cat > "$DIR/tasks/needs.md" <<'TASK'
+---
+id: needs
+title: Tarefa sem contexto
+repo: .
+labels: [aiw]
+acceptance:
+  - O pipeline conclui a tarefa.
+---
+Descrição agora suficientemente detalhada para executar a tarefa.
+TASK
+
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out2.jsonl" 2>"$DIR/err2.log"
+SUCCEEDED=$(grep -c '"status":"succeeded"' "$DIR/out2.jsonl" || true)
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$SUCCEEDED" 1 "tarefa reprocessada após editar"
+assert_eq "$DONE" 1 "tarefa em done após editar"
+assert_eq "$CLAIMS" 0 "claims após reprocessamento"
+pass "intake: needs_input, perguntas e reprocessamento após edição"
 
 echo "verify ok"

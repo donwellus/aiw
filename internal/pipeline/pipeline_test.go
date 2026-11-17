@@ -3,6 +3,7 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,6 +176,7 @@ func TestRunEndToEndWithFakeEngine(t *testing.T) {
 }
 
 func TestPausedGateAndResume(t *testing.T) {
+	t.Setenv("AIW_NONINTERACTIVE", "1")
 	root, cfg, ref, task := setupProject(t, "    spec: true\n    plan: false\n")
 	p := New(cfg)
 	p.Telemetry = telemetry.NewRecorder()
@@ -212,5 +214,129 @@ func TestPausedGateAndResume(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "tasks", "done", "001.md")); err != nil {
 		t.Fatalf("tarefa não foi movida após resume: %v", err)
+	}
+}
+
+func TestIntakeNeedsInput(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: auto\n    plan: auto\n")
+	task.Description += "\nneeds-input"
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{})
+	if !errors.Is(err, ErrNeedsInput) {
+		t.Fatalf("esperava ErrNeedsInput, obtive %v", err)
+	}
+	if res == nil || res.Status != "needs_input" {
+		t.Fatalf("resultado inesperado: %+v", res)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "needs_input" {
+		t.Fatalf("status = %q", run.Status)
+	}
+	if run.Gates["intake"] == "approved" {
+		t.Fatal("intake não deveria estar aprovado")
+	}
+	questions, err := os.ReadFile(filepath.Join(cfg.RunsDir(), res.RunID, "questions.md"))
+	if err != nil {
+		t.Fatalf("questions.md ausente: %v", err)
+	}
+	if !strings.Contains(string(questions), "pergunta") && !strings.Contains(string(questions), "critérios") {
+		t.Fatalf("questions.md inesperado: %s", questions)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "001.md")); err != nil {
+		t.Fatalf("tarefa não deveria ter sido movida: %v", err)
+	}
+}
+
+func TestIntakeRiskyLabelEscalatesToHuman(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: auto\n    plan: auto\n")
+	task.Labels = append(task.Labels, "risk:high")
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{})
+	if !errors.Is(err, ErrPaused) {
+		t.Fatalf("esperava ErrPaused, obtive %v", err)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "paused" || run.Gates["intake"] != "escalated" {
+		t.Fatalf("estado inesperado: status=%q gate=%q", run.Status, run.Gates["intake"])
+	}
+
+	run.Gates["intake"] = "approved"
+	if err := SaveRun(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	p2 := New(cfg)
+	p2.Telemetry = telemetry.NewRecorder()
+	resumed, err := p2.Resume(context.Background(), res.RunID, Options{AutoApprove: true})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if resumed.Status != "succeeded" {
+		t.Fatalf("status após resume = %q", resumed.Status)
+	}
+}
+
+func TestValidatorEscalatesAfterMaxRounds(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: auto\n    plan: auto\n")
+	task.Title += " validator-rejects"
+	cfg.Defaults.MaxGateRounds = 2
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{})
+	if !errors.Is(err, ErrPaused) {
+		t.Fatalf("esperava ErrPaused, obtive %v", err)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "paused" || run.Gates["spec"] != "escalated" {
+		t.Fatalf("estado inesperado: status=%q gate=%q", run.Status, run.Gates["spec"])
+	}
+	review, err := os.ReadFile(filepath.Join(cfg.RunsDir(), res.RunID, "spec-review.md"))
+	if err != nil {
+		t.Fatalf("spec-review.md ausente: %v", err)
+	}
+	if !strings.Contains(strings.ToUpper(string(review)), "DECISION: REJECTED") {
+		t.Fatalf("review inesperado: %s", review)
+	}
+
+	run.Gates["spec"] = "approved"
+	if err := SaveRun(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	p2 := New(cfg)
+	p2.Telemetry = telemetry.NewRecorder()
+	resumed, err := p2.Resume(context.Background(), res.RunID, Options{AutoApprove: true})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if resumed.Status != "succeeded" {
+		t.Fatalf("status após resume = %q", resumed.Status)
+	}
+}
+
+func TestIntakeRiskyLabelWithAutoApprove(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: auto\n    plan: auto\n")
+	task.Labels = append(task.Labels, "risk:high")
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{AutoApprove: true})
+	if err != nil {
+		t.Fatalf("Run com --auto: %v", err)
+	}
+	if res.Status != "succeeded" {
+		t.Fatalf("status = %q", res.Status)
 	}
 }

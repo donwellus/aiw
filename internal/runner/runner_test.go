@@ -133,3 +133,19 @@ func TestWorkCancel(t *testing.T) {
 		t.Fatal("Work não retornou após cancelamento")
 	}
 }
+
+func TestCheckNeedsInput(t *testing.T) {
+	run, store := newTestRunner(t)
+	task := testTask("001")
+	if err := store.Put(state.TaskRecord{Source: "folder", ID: "001", Status: "needs_input", RunID: "run-1", ContentHash: task.ContentHash}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, skip := run.Check(task, false)
+	if !skip || outcome.Status != "needs_input" || outcome.RunID != "run-1" {
+		t.Fatalf("outcome inesperado: %+v skip=%v", outcome, skip)
+	}
+	task.ContentHash = "novo"
+	if _, skip := run.Check(task, false); skip {
+		t.Fatal("hash alterado deveria ser elegível")
+	}
+}

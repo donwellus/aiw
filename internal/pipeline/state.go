@@ -46,7 +46,7 @@ type RunState struct {
 	UpdatedAt      time.Time         `json:"updated_at"`
 }
 
-var stageOrder = []string{"requirements", "architect", "implement", "test", "review", "deliver"}
+var stageOrder = []string{"intake", "requirements", "architect", "implement", "test", "review", "deliver"}
 
 func newRunState(id string, task *source.Task, ref source.Ref, sourceName, repo string) *RunState {
 	now := time.Now().UTC()
