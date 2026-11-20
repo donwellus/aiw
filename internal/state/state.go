@@ -14,6 +14,7 @@ import (
 )
 
 type TaskRecord struct {
+	Key         string    `json:"key,omitempty"`
 	Source      string    `json:"source"`
 	ID          string    `json:"id"`
 	Status      string    `json:"status"`
@@ -23,6 +24,7 @@ type TaskRecord struct {
 }
 
 type ClaimInfo struct {
+	Key       string    `json:"key,omitempty"`
 	Source    string    `json:"source"`
 	ID        string    `json:"id"`
 	RunID     string    `json:"run_id"`
@@ -111,6 +113,55 @@ func (s *Store) All() []TaskRecord {
 	return records
 }
 
+func LatestByID(records []TaskRecord) []TaskRecord {
+	latest := map[string]TaskRecord{}
+	for _, record := range records {
+		current, ok := latest[record.ID]
+		if !ok || record.UpdatedAt.After(current.UpdatedAt) {
+			latest[record.ID] = record
+		}
+	}
+	out := make([]TaskRecord, 0, len(latest))
+	for _, record := range latest {
+		out = append(out, record)
+	}
+	sortRecords(out)
+	return out
+}
+
+func (s *Store) FindByKey(key string) (TaskRecord, bool) {
+	if key == "" {
+		return TaskRecord{}, false
+	}
+	var best TaskRecord
+	found := false
+	for _, record := range s.All() {
+		if record.Key != key {
+			continue
+		}
+		if !found || record.UpdatedAt.After(best.UpdatedAt) {
+			best = record
+			found = true
+		}
+	}
+	return best, found
+}
+
+func (s *Store) FindByID(id string) (TaskRecord, bool) {
+	var best TaskRecord
+	found := false
+	for _, record := range s.All() {
+		if record.ID != id {
+			continue
+		}
+		if !found || record.UpdatedAt.After(best.UpdatedAt) {
+			best = record
+			found = true
+		}
+	}
+	return best, found
+}
+
 func (s *Store) FindByRunID(runID string) (TaskRecord, bool) {
 	if runID == "" {
 		return TaskRecord{}, false
@@ -132,8 +183,25 @@ type Claim struct {
 }
 
 func (s *Store) Claim(source, id, runID string, ttl time.Duration) (*Claim, bool, error) {
-	path := filepath.Join(s.claimsDir, claimFileName(source, id))
+	return s.ClaimByKey(source+":"+id, source, id, runID, ttl)
+}
+
+func (s *Store) ClaimByKey(key, source, id, runID string, ttl time.Duration) (*Claim, bool, error) {
+	if strings.TrimSpace(key) == "" {
+		key = source + ":" + id
+	}
+	path := filepath.Join(s.claimsDir, claimFileNameByKey(key))
+	legacyPath := filepath.Join(s.claimsDir, legacyClaimFileName(source, id))
+	if legacyPath != path {
+		if stat, statErr := os.Stat(legacyPath); statErr == nil {
+			if ttl <= 0 || time.Since(stat.ModTime()) <= ttl {
+				return nil, false, nil
+			}
+			_ = os.Remove(legacyPath)
+		}
+	}
 	info := ClaimInfo{
+		Key:       key,
 		Source:    source,
 		ID:        id,
 		RunID:     runID,
@@ -285,7 +353,11 @@ func (s *Store) ClaimInfo(source, id string) (ClaimInfo, bool) {
 }
 
 func (s *Store) ReleaseClaim(source, id string) error {
-	err := os.Remove(filepath.Join(s.claimsDir, claimFileName(source, id)))
+	return s.ReleaseClaimKey(source + ":" + id)
+}
+
+func (s *Store) ReleaseClaimKey(key string) error {
+	err := os.Remove(filepath.Join(s.claimsDir, claimFileNameByKey(key)))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -417,7 +489,16 @@ func taskFileName(source, id string) string {
 }
 
 func claimFileName(source, id string) string {
+	return claimFileNameByKey(source + ":" + id)
+}
+
+func legacyClaimFileName(source, id string) string {
 	return keyPrefix(source, id) + ".lock"
+}
+
+func claimFileNameByKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:16]) + ".lock"
 }
 
 func keyPrefix(source, id string) string {

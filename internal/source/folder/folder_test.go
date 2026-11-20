@@ -213,3 +213,60 @@ func TestDoingLifecycle(t *testing.T) {
 		t.Fatalf("doing deveria estar vazio: %v", leftovers)
 	}
 }
+
+func TestListAllLocations(t *testing.T) {
+	root, driver := newFixture(t)
+	refs, err := driver.ListAll(context.Background(), source.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 4 {
+		t.Fatalf("ListAll = %d, esperado 4 (inbox + done + failed)", len(refs))
+	}
+	locations := map[string]string{}
+	for _, ref := range refs {
+		locations[ref.ID] = ref.Meta["location"]
+	}
+	if locations["001"] != "inbox" || locations["002"] != "inbox" {
+		t.Fatalf("inbox inesperado: %+v", locations)
+	}
+	if locations["antiga"] != "done" || locations["falha"] != "failed" {
+		t.Fatalf("localizações inesperadas: %+v", locations)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tasks", "done", "antiga.md")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaimKeySharedAcrossAliases(t *testing.T) {
+	root, base := newFixture(t)
+	folderDriver, err := New("folder", root, base.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waveDriver, err := New("wave-a", root, base.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refsA, err := folderDriver.List(context.Background(), source.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refsB, err := waveDriver.List(context.Background(), source.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refsA) != len(refsB) || len(refsA) == 0 {
+		t.Fatal("fixtures inesperadas")
+	}
+	if refsA[0].ClaimKey == "" || refsA[0].ClaimKey != refsB[0].ClaimKey {
+		t.Fatalf("ClaimKey divergente: %q vs %q", refsA[0].ClaimKey, refsB[0].ClaimKey)
+	}
+	task, err := waveDriver.Fetch(context.Background(), refsB[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ClaimKey != refsA[0].ClaimKey {
+		t.Fatalf("Task.ClaimKey = %q, esperado %q", task.ClaimKey, refsA[0].ClaimKey)
+	}
+}

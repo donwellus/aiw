@@ -72,6 +72,14 @@ func (d *Driver) Caps() source.Caps {
 }
 
 func (d *Driver) List(ctx context.Context, f source.Filter) ([]source.Ref, error) {
+	return d.scan(ctx, f, false)
+}
+
+func (d *Driver) ListAll(ctx context.Context, f source.Filter) ([]source.Ref, error) {
+	return d.scan(ctx, f, true)
+}
+
+func (d *Driver) scan(ctx context.Context, f source.Filter, all bool) ([]source.Ref, error) {
 	var refs []source.Ref
 	err := filepath.WalkDir(d.base, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -84,7 +92,10 @@ func (d *Driver) List(ctx context.Context, f source.Filter) ([]source.Ref, error
 			if path == d.base {
 				return nil
 			}
-			if entry.Name() == ".git" || samePath(path, d.doing) || samePath(path, d.done) || samePath(path, d.failed) {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			if !all && (samePath(path, d.doing) || samePath(path, d.done) || samePath(path, d.failed)) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -103,11 +114,22 @@ func (d *Driver) List(ctx context.Context, f source.Filter) ([]source.Ref, error
 		if err != nil {
 			return err
 		}
+		location := "inbox"
+		switch {
+		case within(path, d.doing):
+			location = "doing"
+		case within(path, d.done):
+			location = "done"
+		case within(path, d.failed):
+			location = "failed"
+		}
 		refs = append(refs, source.Ref{
 			Source:    d.name,
 			ID:        task.ExternalID,
 			URL:       path,
 			UpdatedAt: info.ModTime(),
+			ClaimKey:  d.claimKey(task.ExternalID),
+			Meta:      map[string]string{"location": location},
 		})
 		return nil
 	})
@@ -137,6 +159,7 @@ func (d *Driver) Fetch(ctx context.Context, ref source.Ref) (*source.Task, error
 		return nil, err
 	}
 	task.Source = d.name
+	task.ClaimKey = d.claimKey(task.ExternalID)
 	return task, nil
 }
 
@@ -373,6 +396,21 @@ func firstHeading(body string) string {
 		}
 	}
 	return ""
+}
+
+func (d *Driver) claimKey(id string) string {
+	return "folder:" + filepath.Clean(d.base) + ":" + id
+}
+
+func within(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }
 
 func samePath(a, b string) bool {

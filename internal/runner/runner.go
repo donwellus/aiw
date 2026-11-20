@@ -64,7 +64,13 @@ func (r *Runner) Check(task *source.Task, force bool) (Outcome, bool) {
 	if force {
 		return out, false
 	}
-	record, ok := r.store.Get(task.Source, task.ExternalID)
+	var record state.TaskRecord
+	var ok bool
+	if task.ClaimKey != "" {
+		record, ok = r.store.FindByKey(task.ClaimKey)
+	} else {
+		record, ok = r.store.Get(task.Source, task.ExternalID)
+	}
 	if !ok {
 		return out, false
 	}
@@ -112,7 +118,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 	if runID == "" {
 		runID = r.pipe.NewRunID(req.Task)
 	}
-	claim, acquired, err := r.store.Claim(req.Task.Source, req.Task.ExternalID, runID, r.cfg.Defaults.ClaimTTL.Std())
+	claim, acquired, err := r.store.ClaimByKey(source.IdentityKey(req.Ref, req.Task), req.Task.Source, req.Task.ExternalID, runID, r.cfg.Defaults.ClaimTTL.Std())
 	if err != nil {
 		out.Status = "failed"
 		out.Err = fmt.Errorf("claim: %w", err)
@@ -137,6 +143,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 
 	out.RunID = runID
 	if err := r.store.Put(state.TaskRecord{
+		Key:         req.Task.ClaimKey,
 		Source:      req.Task.Source,
 		ID:          req.Task.ExternalID,
 		Status:      "running",
@@ -192,6 +199,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 	}
 
 	record := state.TaskRecord{
+		Key:         req.Task.ClaimKey,
 		Source:      req.Task.Source,
 		ID:          req.Task.ExternalID,
 		RunID:       out.RunID,

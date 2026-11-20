@@ -28,6 +28,7 @@ type Task struct {
 	CreatedAt     time.Time         `json:"created_at,omitempty"`
 	UpdatedAt     time.Time         `json:"updated_at,omitempty"`
 	ContentHash   string            `json:"content_hash"`
+	ClaimKey      string            `json:"claim_key,omitempty"`
 	ProviderMeta  map[string]string `json:"provider_meta,omitempty"`
 	Raw           json.RawMessage   `json:"raw,omitempty"`
 }
@@ -39,12 +40,14 @@ type Comment struct {
 }
 
 type Ref struct {
-	Source     string    `json:"source"`
-	ID         string    `json:"id"`
-	ProviderID string    `json:"provider_id,omitempty"`
-	URL        string    `json:"url,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at,omitempty"`
-	ETag       string    `json:"etag,omitempty"`
+	Source     string            `json:"source"`
+	ID         string            `json:"id"`
+	ProviderID string            `json:"provider_id,omitempty"`
+	URL        string            `json:"url,omitempty"`
+	UpdatedAt  time.Time         `json:"updated_at,omitempty"`
+	ETag       string            `json:"etag,omitempty"`
+	ClaimKey   string            `json:"claim_key,omitempty"`
+	Meta       map[string]string `json:"meta,omitempty"`
 }
 
 type Filter struct {
@@ -66,6 +69,10 @@ type Source interface {
 	Caps() Caps
 	List(ctx context.Context, f Filter) ([]Ref, error)
 	Fetch(ctx context.Context, ref Ref) (*Task, error)
+}
+
+type AllLister interface {
+	ListAll(ctx context.Context, f Filter) ([]Ref, error)
 }
 
 type RunResult struct {
@@ -148,4 +155,22 @@ func MatchFilter(task *Task, f Filter) bool {
 		return false
 	}
 	return true
+}
+
+func IdentityKey(ref Ref, task *Task) string {
+	if ref.ClaimKey != "" {
+		return ref.ClaimKey
+	}
+	if task != nil && task.ClaimKey != "" {
+		return task.ClaimKey
+	}
+	sourceName := ref.Source
+	if task != nil && task.Source != "" {
+		sourceName = task.Source
+	}
+	id := ref.ID
+	if task != nil && task.ExternalID != "" {
+		id = task.ExternalID
+	}
+	return sourceName + ":" + id
 }

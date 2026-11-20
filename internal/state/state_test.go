@@ -211,3 +211,71 @@ func TestClaimStaleConcurrent(t *testing.T) {
 		t.Fatalf("sucessos no takeover = %d, esperado 1", successes)
 	}
 }
+
+func TestFindByIDAcrossSources(t *testing.T) {
+	store, _ := openStore(t)
+	if err := store.Put(TaskRecord{Source: "folder", ID: "001", Status: "todo"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := store.Put(TaskRecord{Source: "wave", ID: "001", Status: "succeeded", RunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := store.FindByID("001")
+	if !ok || record.Status != "succeeded" || record.Source != "wave" {
+		t.Fatalf("FindByID = %+v ok=%v", record, ok)
+	}
+}
+
+func TestLatestByID(t *testing.T) {
+	now := time.Now()
+	records := []TaskRecord{
+		{Source: "wave", ID: "015", Status: "needs_input", UpdatedAt: now.Add(-time.Hour)},
+		{Source: "folder", ID: "015", Status: "succeeded", UpdatedAt: now},
+		{Source: "wave", ID: "035", Status: "needs_input", UpdatedAt: now},
+	}
+	latest := LatestByID(records)
+	if len(latest) != 2 {
+		t.Fatalf("latest = %+v", latest)
+	}
+	for _, record := range latest {
+		if record.ID == "015" && record.Status != "succeeded" {
+			t.Fatalf("015 = %+v", record)
+		}
+		if record.ID == "035" && record.Status != "needs_input" {
+			t.Fatalf("035 = %+v", record)
+		}
+	}
+}
+
+func TestClaimByKeyAcrossAliases(t *testing.T) {
+	store, _ := openStore(t)
+	key := "folder:/tmp/tasks:001"
+	claim, ok, err := store.ClaimByKey(key, "folder", "001", "run-1", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("ClaimByKey: %v %v", ok, err)
+	}
+	if claim.Info().Key != key {
+		t.Fatalf("key = %q", claim.Info().Key)
+	}
+	if _, ok, _ := store.ClaimByKey(key, "wave-a", "001", "run-2", time.Hour); ok {
+		t.Fatal("alias não deveria conseguir o mesmo claim")
+	}
+	_ = claim.Release()
+	if claim2, ok, _ := store.ClaimByKey(key, "wave-a", "001", "run-2", time.Hour); ok {
+		_ = claim2.Release()
+	} else {
+		t.Fatal("claim deveria estar livre após release")
+	}
+}
+
+func TestClaimByKeySeesLegacyClaim(t *testing.T) {
+	store, _ := openStore(t)
+	legacy := filepath.Join(store.claimsDir, legacyClaimFileName("folder", "001"))
+	if err := os.WriteFile(legacy, []byte(`{"source":"folder","id":"001","run_id":"old","pid":1,"created_at":"2026-01-01T00:00:00Z"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.ClaimByKey("folder:/tasks:001", "folder", "001", "new", time.Hour); err != nil || ok {
+		t.Fatalf("claim deveria ver o lock legado: ok=%v err=%v", ok, err)
+	}
+}

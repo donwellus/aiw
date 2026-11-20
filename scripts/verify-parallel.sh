@@ -109,6 +109,13 @@ sources:
     doing_dir: ./tasks/doing
     done_dir: ./tasks/done
     failed_dir: ./tasks/failed
+  alias:
+    driver: folder
+    path: ./tasks
+    doing_dir: ./tasks/doing
+    done_dir: ./tasks/done
+    failed_dir: ./tasks/failed
+    labels: [aiw]
 default_source: folder
 workspace:
   default_repo: .
@@ -230,7 +237,38 @@ print("ok   isolamento de artefatos, commits e estado por tarefa")
 PY
 pass "dois pools concorrentes: 8 tarefas, exactly-once, claims liberados"
 
-# 2) Falha isolada: uma tarefa com repo inválido não derruba as outras.
+# 2) Aliases folder: claims canônicos entre sources com a mesma pasta.
+DIR="$WORK/aliases"
+new_project "$DIR"
+for i in 1 2 3 4; do
+  write_task "$DIR" "alias-$i" "Tarefa alias $i"
+done
+export AIW_SLOW_SECONDS=0.2
+"$AIW" --root "$DIR" work --source folder --workers 2 --auto --json >"$DIR/folder.jsonl" 2>"$DIR/folder.err" &
+A1=$!
+"$AIW" --root "$DIR" work --source alias --workers 2 --auto --json >"$DIR/alias.jsonl" 2>"$DIR/alias.err" &
+A2=$!
+set +e
+wait "$A1"
+AE1=$?
+wait "$A2"
+AE2=$?
+set -e
+assert_eq "$AE1" 0 "pool folder"
+assert_eq "$AE2" 0 "pool alias"
+SUCCEEDED=$( { grep -h -c '"status":"succeeded"' "$DIR/folder.jsonl" "$DIR/alias.jsonl" || true; } | awk '{s+=$1} END{print s+0}' )
+RUNS=$(find "$DIR/.aiw/runs" -name run.json | wc -l | tr -d ' ')
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$SUCCEEDED" 4 "sucessos com aliases"
+assert_eq "$RUNS" 4 "runs com aliases (exactly-once)"
+assert_eq "$DONE" 4 "tarefas em done com aliases"
+assert_eq "$DOING" 0 "doing vazio com aliases"
+assert_eq "$CLAIMS" 0 "claims após aliases"
+pass "aliases folder: claim canônico exactly-once"
+
+# 3) Falha isolada: uma tarefa com repo inválido não derruba as outras.
 DIR="$WORK/failure"
 new_project "$DIR"
 write_task "$DIR" "good-a" "Tarefa boa A"

@@ -139,7 +139,7 @@ aiw resume <run-id>
 | `aiw init` | cria `.aiw/config.yaml`, `tasks/` e tarefa de exemplo |
 | `aiw doctor` | valida engines, fontes, git, gh e Langfuse |
 | `aiw sync` | busca tarefas e grava snapshots em `.aiw/queue/` |
-| `aiw list [--eligible] [--status] [--json]` | lista tarefas e seus status locais |
+| `aiw list [--all] [--eligible] [--status] [--json]` | lista tarefas e status (inbox ou histórico local) |
 | `aiw run --task <path\|source:id>` | executa o pipeline para uma tarefa |
 | `aiw work --workers N [--auto]` | processa tarefas elegíveis em paralelo |
 | `aiw daemon [--interval 60s]` | processa continuamente em intervalos |
@@ -147,11 +147,29 @@ aiw resume <run-id>
 | `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
-| `aiw status <run-id>` | estado, estágios, custo e eventos |
+| `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 
 Flags úteis de `run`: `--repo`, `--engine`, `--auto`, `--budget`, `--pr`, `--force`, `--no-write-back`.
+
+### Listando tarefas e status
+
+```bash
+aiw list                      # inbox (tasks/)
+aiw list --all                # inbox + doing + done + failed
+aiw list --all --status succeeded
+aiw list --all --status needs_input
+aiw list --all --json
+aiw status                    # apenas o que está em andamento
+```
+
+- `aiw list` sem `--all` é a fila de entrada; `doing/`, `done/` e `failed/` ficam fora.
+- `--all` (fonte `folder`) mostra tudo com colunas `STATUS` e `LOCAL`.
+- Status vem do estado por tarefa; localização (`inbox/doing/done/failed`) serve de fallback para tarefas antigas sem registro.
+- `aiw status` é o resumo vivo de running/paused/needs_input; deduplica pelo registro mais recente por ID (registros antigos de aliases não aparecem). `aiw status <run-id>` detalha uma execução.
+- Aliases `folder`/`wave-*` apontando para a mesma pasta compartilham o claim canônico `folder:<pasta>:<id>`, evitando runs duplicadas.
+- Para fontes remotas, `--all` ainda não existe; use `aiw runs` para histórico de execuções.
 
 ### Paralelismo (`aiw work`)
 

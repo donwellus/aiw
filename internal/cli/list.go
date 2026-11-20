@@ -14,7 +14,8 @@ import (
 
 type listEntry struct {
 	*source.Task
-	Status string `json:"status"`
+	Status   string `json:"status"`
+	Location string `json:"location,omitempty"`
 }
 
 func newListCommand(opts *rootOptions) *cobra.Command {
@@ -22,6 +23,7 @@ func newListCommand(opts *rootOptions) *cobra.Command {
 	var eligibleOnly bool
 	var asJSON bool
 	var statusFilter string
+	var all bool
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "Lista tarefas da fonte",
@@ -39,7 +41,16 @@ func newListCommand(opts *rootOptions) *cobra.Command {
 				return err
 			}
 			ctx := context.Background()
-			refs, err := src.List(ctx, filter)
+			var refs []source.Ref
+			if all {
+				lister, ok := src.(source.AllLister)
+				if !ok {
+					return fmt.Errorf("--all disponível apenas para fontes com histórico local (folder); para runs use 'aiw runs'")
+				}
+				refs, err = lister.ListAll(ctx, filter)
+			} else {
+				refs, err = src.List(ctx, filter)
+			}
 			if err != nil {
 				return err
 			}
@@ -51,14 +62,34 @@ func newListCommand(opts *rootOptions) *cobra.Command {
 				}
 				status := "todo"
 				eligible := true
-				if record, ok := store.Get(src.Name(), task.ExternalID); ok {
-					status = record.Status
+				record, found := store.FindByID(task.ExternalID)
+				location := ref.Meta["location"]
+				if location == "" {
+					location = "inbox"
+				}
+				if !found || record.Status == "todo" {
+					switch location {
+					case "done":
+						status = "succeeded"
+					case "failed":
+						status = "failed"
+					case "doing":
+						status = "running"
+					}
+				}
+				if found {
+					if record.Status != "todo" || status == "todo" {
+						status = record.Status
+					}
 					switch record.Status {
 					case "succeeded":
 						eligible = record.ContentHash != task.ContentHash
-					case "running", "paused":
+					case "running", "paused", "needs_input":
 						eligible = false
 					}
+				}
+				if location != "inbox" {
+					eligible = false
 				}
 				if eligibleOnly && !eligible {
 					continue
@@ -66,7 +97,7 @@ func newListCommand(opts *rootOptions) *cobra.Command {
 				if statusFilter != "" && status != statusFilter {
 					continue
 				}
-				entries = append(entries, listEntry{Task: task, Status: status})
+				entries = append(entries, listEntry{Task: task, Status: status, Location: location})
 			}
 			out := cmd.OutOrStdout()
 			if asJSON {
@@ -75,7 +106,7 @@ func newListCommand(opts *rootOptions) *cobra.Command {
 				return encoder.Encode(entries)
 			}
 			writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-			fmt.Fprintln(writer, "ID\tSTATUS\tPRIORIDADE\tLABELS\tTÍTULO")
+			fmt.Fprintln(writer, "ID\tSTATUS\tLOCAL\tPRIORIDADE\tLABELS\tTÍTULO")
 			for _, entry := range entries {
 				labels := ""
 				for i, label := range entry.Labels {
@@ -84,15 +115,19 @@ func newListCommand(opts *rootOptions) *cobra.Command {
 					}
 					labels += label
 				}
-				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n", entry.ExternalID, entry.Status, entry.Priority, labels, entry.Title)
+				fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n", entry.ExternalID, entry.Status, entry.Location, entry.Priority, labels, entry.Title)
 			}
 			writer.Flush()
 			fmt.Fprintf(out, "\n%d tarefa(s) na fonte %s\n", len(entries), src.Name())
+			if len(entries) == 0 && (statusFilter == "running" || statusFilter == "paused" || statusFilter == "needs_input") {
+				fmt.Fprintln(out, "tarefas nesses estados ficam fora do inbox (doing/estado); use 'aiw status' para ver o que está em andamento")
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&sourceName, "source", "", "fonte de tarefas")
 	cmd.Flags().BoolVar(&eligibleOnly, "eligible", false, "mostra apenas tarefas elegíveis para execução")
+	cmd.Flags().BoolVar(&all, "all", false, "inclui doing/done/failed (histórico local)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "saída em JSON")
 	cmd.Flags().StringVar(&statusFilter, "status", "", "filtra por status (todo, running, paused, succeeded, failed)")
 	return cmd

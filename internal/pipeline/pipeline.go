@@ -266,7 +266,10 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			continue
 		}
 		st.StartedAt = time.Now().UTC()
+		st.Status = "running"
+		run.Stage = st.Name
 		appendEvent(dir, "stage.start", map[string]any{"stage": st.Name})
+		p.save(run, dir)
 
 		var err error
 		switch st.Name {

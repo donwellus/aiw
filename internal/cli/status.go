@@ -4,23 +4,33 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/config"
 	"github.com/donwellus/aiw/internal/pipeline"
+	"github.com/donwellus/aiw/internal/state"
 )
 
 func newStatusCommand(opts *rootOptions) *cobra.Command {
 	return &cobra.Command{
-		Use:   "status <run-id>",
-		Short: "Mostra o estado de uma execução",
-		Args:  cobra.ExactArgs(1),
+		Use:   "status [run-id]",
+		Short: "Mostra execuções em andamento ou o estado de uma execução",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := opts.load()
 			if err != nil {
 				return err
+			}
+			store, err := state.Open(cfg.StateDir())
+			if err != nil {
+				return err
+			}
+			if len(args) == 0 {
+				return showActive(cmd, cfg, store)
 			}
 			run, err := pipeline.LoadRun(cfg, args[0])
 			if err != nil {
@@ -67,4 +77,39 @@ func newStatusCommand(opts *rootOptions) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) error {
+	records := state.LatestByID(store.All())
+	active := make([]state.TaskRecord, 0)
+	for _, record := range records {
+		switch record.Status {
+		case "running", "paused", "needs_input":
+			active = append(active, record)
+		}
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i].UpdatedAt.After(active[j].UpdatedAt) })
+	out := cmd.OutOrStdout()
+	if len(active) == 0 {
+		fmt.Fprintln(out, "nenhuma tarefa em andamento (running/paused/needs_input)")
+		return nil
+	}
+	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(writer, "TAREFA\tSTATUS\tESTÁGIO\tRUN\tCUSTO")
+	for _, record := range active {
+		status := record.Status
+		stage := "-"
+		cost := 0.0
+		if record.RunID != "" {
+			if run, err := pipeline.LoadRun(cfg, record.RunID); err == nil {
+				status = run.Status
+				stage = run.Stage
+				cost = run.Usage.CostUSD
+			}
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\tUS$ %.4f\n", record.ID, status, stage, record.RunID, cost)
+	}
+	writer.Flush()
+	fmt.Fprintf(out, "\n%d tarefa(s) em andamento\n", len(active))
+	return nil
 }
