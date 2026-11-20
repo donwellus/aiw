@@ -17,6 +17,7 @@ import (
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/state"
+	"github.com/donwellus/aiw/internal/webhook"
 )
 
 type daemonStats struct {
@@ -99,6 +100,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	var asJSON bool
 	var once bool
 	var statusAddr string
+	var webhookAddr string
 
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -133,6 +135,10 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			resolvedSource := sourceName
+			if resolvedSource == "" {
+				resolvedSource = cfg.DefaultSource
+			}
 			run := runner.New(cfg, store, p)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -141,6 +147,38 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 			if asJSON {
 				logOut = cmd.ErrOrStderr()
 			}
+			wake := make(chan struct{}, 1)
+			if webhookAddr != "" {
+				sc, err := cfg.SourceConfig(resolvedSource)
+				if err != nil {
+					return err
+				}
+				if sc.Driver != "github" {
+					return fmt.Errorf("webhook disponível apenas para source github nesta versão (driver atual: %s)", sc.Driver)
+				}
+				secretEnv := sc.WebhookSecretEnv
+				if secretEnv == "" {
+					secretEnv = "GITHUB_WEBHOOK_SECRET"
+				}
+				secret := os.Getenv(secretEnv)
+				if secret == "" {
+					return fmt.Errorf("variável %s não definida para validar webhooks", secretEnv)
+				}
+				handler := webhook.NewGitHub(sc.Repo, secret, func(event webhook.GitHubEvent) {
+					fmt.Fprintf(logOut, "[daemon] webhook github: #%d %s\n", event.Number, event.Action)
+					select {
+					case wake <- struct{}{}:
+					default:
+					}
+				})
+				stopWebhook, addr, err := startWebhookServer(ctx, webhookAddr, handler)
+				if err != nil {
+					return err
+				}
+				defer stopWebhook()
+				fmt.Fprintf(logOut, "[daemon] webhook em http://%s/webhooks/github\n", addr)
+			}
+
 			stats := newDaemonStats(interval, workers, src.Name())
 			if statusAddr != "" {
 				shutdown, addr, err := startDaemonStatus(ctx, statusAddr, stats, store)
@@ -213,6 +251,8 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				case <-ctx.Done():
 					fmt.Fprintln(logOut, "[daemon] encerrando")
 					return nil
+				case <-wake:
+					continue
 				case <-time.After(interval):
 				}
 			}
@@ -240,6 +280,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "saída JSONL por tarefa")
 	cmd.Flags().BoolVar(&once, "once", false, "executa um único ciclo e encerra")
 	cmd.Flags().StringVar(&statusAddr, "status-addr", "", "endereço HTTP para /healthz e /status (ex.: 127.0.0.1:8787)")
+	cmd.Flags().StringVar(&webhookAddr, "webhook-addr", "", "endereço HTTP para webhooks (github) - ex.: 127.0.0.1:8788")
 	return cmd
 }
 
@@ -263,6 +304,36 @@ func startDaemonStatus(ctx context.Context, addr string, stats *daemonStats, sto
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	shutdown := func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}
+	return shutdown, listener.Addr().String(), nil
+}
+
+func startWebhookServer(ctx context.Context, addr string, handler http.Handler) (func(), string, error) {
+	mux := http.NewServeMux()
+	mux.Handle("/webhooks/github", handler)
+	mux.Handle("/webhooks", handler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, "", err
+	}
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		_ = server.Serve(listener)
 	}()

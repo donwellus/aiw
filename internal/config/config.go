@@ -164,14 +164,15 @@ type SourceConfig struct {
 	Limit         int      `yaml:"limit"`
 	WriteBack     *bool    `yaml:"write_back"`
 
-	Repo         string `yaml:"repo"`
-	RepoPath     string `yaml:"repo_path"`
-	State        string `yaml:"state"`
-	RunningLabel string `yaml:"running_label"`
-	DoneLabel    string `yaml:"done_label"`
-	FailedLabel  string `yaml:"failed_label"`
-	Comment      *bool  `yaml:"comment"`
-	CloseOnDone  *bool  `yaml:"close_on_done"`
+	Repo             string `yaml:"repo"`
+	RepoPath         string `yaml:"repo_path"`
+	State            string `yaml:"state"`
+	RunningLabel     string `yaml:"running_label"`
+	DoneLabel        string `yaml:"done_label"`
+	FailedLabel      string `yaml:"failed_label"`
+	Comment          *bool  `yaml:"comment"`
+	CloseOnDone      *bool  `yaml:"close_on_done"`
+	WebhookSecretEnv string `yaml:"webhook_secret_env"`
 
 	Team    string `yaml:"team"`
 	Project string `yaml:"project"`
@@ -571,6 +572,7 @@ sources:
   #   exclude_labels: [aiw:running, aiw:done, aiw:failed]
   #   comment: true
   #   close_on_done: false
+  #   webhook_secret_env: GITHUB_WEBHOOK_SECRET
   # linear:
   #   driver: linear
   #   team: ENG

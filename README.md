@@ -188,6 +188,7 @@ aiw daemon --status-addr 127.0.0.1:8787       # /healthz e /status em JSON
 - Nunca abre prompt; gates humanos pausam a tarefa e liberam o slot.
 - SIGINT/SIGTERM encerra o ciclo, cancela runs em andamento, libera claims e devolve tarefas canceladas ao inbox.
 - Tarefas `paused`/`needs_input` ficam fora da fila até `resume` ou mudança de conteúdo.
+- **Webhooks GitHub** (`--webhook-addr`): o endpoint `/webhooks/github` valida HMAC (`X-Hub-Signature-256`), deduplica por `X-GitHub-Delivery`, responde 202 e acorda o ciclo do daemon. O payload não vira task direto: o daemon reconsulta a issue via `gh`. Use HTTPS/reverse proxy ou túnel em dev; o polling continua como fallback. Requer `webhook_secret_env` (default `GITHUB_WEBHOOK_SECRET`).
 
 ### Pasta doing opcional
 
@@ -369,6 +370,7 @@ sources:
     exclude_labels: [aiw:running, aiw:done, aiw:failed]
     comment: true
     close_on_done: false
+    webhook_secret_env: GITHUB_WEBHOOK_SECRET
 ```
 
 ```bash
@@ -589,7 +591,8 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 
 ## Limitações atuais
 
-- Fontes `folder`, `github`, `linear`, `jira` e `trello`; MCP opcional para agentes; OAuth/webhooks ficam para depois.
+- Fontes `folder`, `github`, `linear`, `jira` e `trello`; MCP opcional para agentes.
+- Webhooks implementados para GitHub; Linear/Jira/Trello ficam para as próximas fases. OAuth do MCP também.
 - Evals cobrem pipeline + verify + judge opcional + similaridade de referência; execução paralela de casos ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
