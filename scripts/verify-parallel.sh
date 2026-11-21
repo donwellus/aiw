@@ -614,6 +614,81 @@ kill -INT "$PID"
 wait "$PID"
 pass "daemon: /healthz e /status"
 
+# 8) Report: tabela, formatos e snapshot opcional da fonte.
+DIR="$WORK/report"
+new_project "$DIR"
+write_task "$DIR" "report-a" "Tarefa report A"
+write_task "$DIR" "report-b" "Tarefa report B"
+
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 2 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+
+"$AIW" --root "$DIR" report >"$DIR/report.txt"
+for want in "RESUMO" "TAREFAS" "report-a" "succeeded" "CUSTO"; do
+  grep -q "$want" "$DIR/report.txt" || fail "report tabela sem $want"
+done
+
+"$AIW" --root "$DIR" report --json >"$DIR/report.json"
+python3 - "$DIR/report.json" <<'PYREPORT'
+import json
+import sys
+report = json.load(open(sys.argv[1]))
+assert report["paused"] is False, report
+assert report["summary"]["by_status"].get("succeeded") == 2, report
+assert len(report["tasks"]) == 2, report
+assert report["summary"]["runs"] >= 2, report
+assert "cost_usd" in report["summary"], report
+assert all(task["status"] == "succeeded" for task in report["tasks"]), report
+PYREPORT
+
+"$AIW" --root "$DIR" report --yaml >"$DIR/report.yaml"
+grep -q "generated_at:" "$DIR/report.yaml" || fail "report YAML sem generated_at"
+grep -q "status: succeeded" "$DIR/report.yaml" || fail "report YAML sem status succeeded"
+
+"$AIW" --root "$DIR" report --md >"$DIR/report.md"
+for want in "## Resumo" "## Tarefas" "| report-a |" "US\$"; do
+  grep -Fq "$want" "$DIR/report.md" || fail "report Markdown sem $want"
+done
+
+"$AIW" --root "$DIR" report --html >"$DIR/report.html"
+grep -qi "<!doctype html>" "$DIR/report.html" || fail "report HTML sem doctype"
+grep -q "report-a" "$DIR/report.html" || fail "report HTML sem tarefa"
+
+set +e
+"$AIW" --root "$DIR" report --json --html >"$DIR/flags.log" 2>&1
+FLAGS_CODE=$?
+set -e
+assert_eq "$FLAGS_CODE" 1 "formatos mutuamente exclusivos"
+
+write_task "$DIR" "report-c" "Tarefa report C"
+"$AIW" --root "$DIR" report --json >"$DIR/report-offline.json"
+"$AIW" --root "$DIR" report --source folder --json >"$DIR/report-source.json"
+python3 - "$DIR/report-offline.json" "$DIR/report-source.json" <<'PYREPORT'
+import json
+import sys
+offline = json.load(open(sys.argv[1]))
+source = json.load(open(sys.argv[2]))
+offline_ids = {task["id"] for task in offline["tasks"]}
+source_ids = {task["id"] for task in source["tasks"]}
+assert "report-c" not in offline_ids, offline
+assert "report-c" in source_ids, source
+by_id = {task["id"]: task for task in source["tasks"]}
+assert by_id["report-c"]["status"] == "todo", by_id["report-c"]
+assert by_id["report-c"]["location"] == "inbox", by_id["report-c"]
+PYREPORT
+
+"$AIW" --root "$DIR" pause >/dev/null
+"$AIW" --root "$DIR" report --json >"$DIR/report-paused.json"
+python3 - "$DIR/report-paused.json" <<'PYREPORT'
+import json
+import sys
+report = json.load(open(sys.argv[1]))
+assert report["paused"] is True, report
+assert any(alert["kind"] == "global_pause" for alert in report["alerts"]), report
+PYREPORT
+"$AIW" --root "$DIR" resume --all >/dev/null
+pass "report: tabela, json, yaml, md, html, source opcional e pausa"
+
 # 7) Release: devolve tarefa pausada em doing para o inbox.
 DIR="$WORK/release"
 new_project "$DIR"

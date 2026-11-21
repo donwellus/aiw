@@ -149,6 +149,7 @@ aiw resume <run-id>
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
+| `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 | `aiw resume --all` | remove a pausa global e retoma runs paused/canceladas |
@@ -172,6 +173,25 @@ aiw status                    # apenas o que está em andamento
 - `aiw status` é o resumo vivo de running/paused/needs_input; deduplica pelo registro mais recente por ID (registros antigos de aliases não aparecem). `aiw status <run-id>` detalha uma execução.
 - Aliases `folder`/`wave-*` apontando para a mesma pasta compartilham o claim canônico `folder:<pasta>:<id>`, evitando runs duplicadas.
 - Para fontes remotas, `--all` ainda não existe; use `aiw runs` para histórico de execuções.
+
+### Relatório (`aiw report`)
+
+```bash
+aiw report                              # tabela: resumo, tarefas, claims e alertas
+aiw report --json                       # automação
+aiw report --yaml
+aiw report --md
+aiw report --html > report.html         # HTML autocontido
+aiw report --source folder --md         # inclui inbox/doing/done/failed do folder
+```
+
+- É **somente leitura**: agrega `.aiw/state` + `.aiw/runs` sem alterar estado, claims ou execuções.
+- Mostra todas as tarefas conhecidas, inclusive `succeeded`, `failed`, `canceled` e `paused`, com estágio, última run e custo.
+- Custo: o resumo soma **todas as runs** (custo real acumulado, incluindo retries); a coluna por tarefa usa a **última run**.
+- `--source <nome>` é opcional e faz chamadas à fonte: no folder inclui inbox+doing+done+failed (tarefas nunca executadas aparecem como `todo`); em fontes remotas inclui o inbox atual. Sem a flag, o relatório funciona offline.
+- `--json`, `--yaml`, `--md` e `--html` são mutuamente exclusivos; a tabela é o padrão.
+- Alertas incluem failed, needs_input, paused, pausa global, claims vencidos e estado apontando para run ausente.
+- `aiw status` continua sendo o resumo operacional curto; use `aiw report` para visão histórica/completa.
 
 ### Paralelismo (`aiw work`)
 
@@ -625,7 +645,7 @@ docs/adr             decisões de arquitetura
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 
-O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` roda o eval smoke e usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing`, daemon e release.
+O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` roda o eval smoke e usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing`, daemon, pausa global, `report` em todos os formatos e release.
 
 ## Licença
 
