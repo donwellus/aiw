@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -11,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/donwellus/aiw/internal/pipeline"
-	"github.com/donwellus/aiw/internal/source"
+	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/state"
 )
 
@@ -20,85 +19,60 @@ func newResumeCommand(opts *rootOptions) *cobra.Command {
 	var budget float64
 	cmd := &cobra.Command{
 		Use:   "resume <run-id>",
-		Short: "Retoma uma execução pausada ou falha",
+		Short: "Retoma uma execução pausada, cancelada ou falha",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := opts.load()
 			if err != nil {
 				return err
 			}
-			run, err := pipeline.LoadRun(cfg, args[0])
-			if err != nil {
-				return err
-			}
-			if run.Status == "needs_input" {
-				return fmt.Errorf("run %s aguarda input; edite a tarefa na fonte e execute novamente", run.ID)
-			}
 			store, err := state.Open(cfg.StateDir())
 			if err != nil {
 				return err
 			}
-			claimKey := source.IdentityKey(run.Ref, &run.Task)
-			claim, acquired, err := store.ClaimByKey(claimKey, run.Task.Source, run.Task.ExternalID, run.ID, cfg.Defaults.ClaimTTL.Std())
-			if err != nil {
-				return err
-			}
-			if !acquired {
-				return fmt.Errorf("tarefa %s já está em execução em outro processo; libere com 'aiw release %s' se necessário", run.Task.ExternalID, run.ID)
-			}
-			defer func() {
-				if err := claim.Release(); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
-				}
-			}()
-
-			if err := store.Put(state.TaskRecord{
-				Key:         run.Task.ClaimKey,
-				Source:      run.Task.Source,
-				ID:          run.Task.ExternalID,
-				Status:      "running",
-				RunID:       run.ID,
-				ContentHash: run.Task.ContentHash,
-			}); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
-			}
-
 			p := pipeline.New(cfg)
 			defer closeTelemetry(p)
-
+			run := runner.New(cfg, store, p)
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			res, runErr := p.Resume(ctx, args[0], pipeline.Options{
+			outcome, runErr := run.Resume(ctx, args[0], pipeline.Options{
 				AutoApprove: auto,
 				BudgetUSD:   budget,
 			})
 
-			if runErr != nil && errors.Is(runErr, pipeline.ErrPaused) {
-				if err := store.Put(state.TaskRecord{Key: run.Task.ClaimKey, Source: run.Task.Source, ID: run.Task.ExternalID, Status: "paused", RunID: run.ID, ContentHash: run.Task.ContentHash}); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "run %s continua pausada\n", res.RunID)
-				fmt.Fprintf(cmd.OutOrStdout(), "aprove com: aiw approve %s <spec|plan>\n", res.RunID)
+			out := cmd.OutOrStdout()
+			switch outcome.Status {
+			case "busy":
+				return fmt.Errorf("tarefa %s está em execução em outro processo", outcome.TaskID)
+			case "skipped":
+				fmt.Fprintf(out, "run %s ignorada: %s\n", outcome.RunID, outcome.Reason)
 				return nil
-			}
-			if runErr != nil {
-				status := "failed"
-				if errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-					status = "todo"
+			case "paused":
+				fmt.Fprintf(out, "run %s pausada\n", outcome.RunID)
+				fmt.Fprintf(out, "artefatos: %s\n", outcome.RunDir)
+				if outcome.Reason != "" {
+					fmt.Fprintf(out, "%s\n", outcome.Reason)
 				}
-				if err := store.Put(state.TaskRecord{Key: run.Task.ClaimKey, Source: run.Task.Source, ID: run.Task.ExternalID, Status: status, RunID: run.ID, ContentHash: run.Task.ContentHash}); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
+				fmt.Fprintf(out, "aprove gates com: aiw approve %s <intake|spec|plan>\n", outcome.RunID)
+				fmt.Fprintf(out, "continue com: aiw resume %s\n", outcome.RunID)
+				return nil
+			case "needs_input":
+				fmt.Fprintf(out, "run %s aguarda input; edite a tarefa na fonte e execute novamente\n", outcome.RunID)
+				return nil
+			case "canceled":
+				fmt.Fprintf(out, "run %s cancelada; use aiw resume para continuar\n", outcome.RunID)
+				return fmt.Errorf("execução cancelada")
+			case "failed":
+				if runErr != nil {
+					return runErr
 				}
-				return runErr
+				return fmt.Errorf("run %s falhou", outcome.RunID)
 			}
-			if err := store.Put(state.TaskRecord{Key: run.Task.ClaimKey, Source: run.Task.Source, ID: run.Task.ExternalID, Status: "succeeded", RunID: run.ID, ContentHash: run.Task.ContentHash}); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %v\n", err)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "run %s concluída\n", res.RunID)
-			fmt.Fprintf(cmd.OutOrStdout(), "branch: %s\n", res.Branch)
-			fmt.Fprintf(cmd.OutOrStdout(), "custo: US$ %.4f\n", res.Usage.CostUSD)
-			if res.PRURL != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "PR: %s\n", res.PRURL)
+			fmt.Fprintf(out, "run %s concluída\n", outcome.RunID)
+			fmt.Fprintf(out, "branch: %s\n", outcome.Branch)
+			fmt.Fprintf(out, "custo: US$ %.4f\n", outcome.CostUSD)
+			if outcome.PRURL != "" {
+				fmt.Fprintf(out, "PR: %s\n", outcome.PRURL)
 			}
 			return nil
 		},

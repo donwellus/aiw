@@ -188,8 +188,12 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 	switch {
 	case runErr == nil:
 		out.Status = "succeeded"
+	case errors.Is(runErr, pipeline.ErrPauseRequested):
+		out.Status = "paused"
+		out.Reason = "pausa solicitada; use aiw resume"
 	case errors.Is(runErr, pipeline.ErrPaused):
 		out.Status = "paused"
+		out.Reason = runErr.Error()
 	case errors.Is(runErr, pipeline.ErrNeedsInput):
 		out.Status = "needs_input"
 	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
@@ -245,7 +249,146 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 	return out
 }
 
-func (r *Runner) Work(ctx context.Context, jobs []Job, workers int, onOutcome func(Outcome)) []Outcome {
+func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options) (Outcome, error) {
+	run, err := pipeline.LoadRun(r.cfg, runID)
+	if err != nil {
+		return Outcome{}, err
+	}
+	out := Outcome{
+		TaskID:   run.Task.ExternalID,
+		Title:    run.Task.Title,
+		RunID:    run.ID,
+		RunDir:   filepath.Join(r.cfg.RunsDir(), run.ID),
+		Branch:   run.Branch,
+		Worktree: run.Worktree,
+	}
+	start := time.Now()
+	defer func() { out.Duration = time.Since(start) }()
+	if run.Status == "needs_input" {
+		return out, fmt.Errorf("run %s aguarda input; edite a tarefa na fonte e execute novamente", run.ID)
+	}
+	if run.Status == "succeeded" {
+		out.Status = "skipped"
+		out.Reason = "run já concluída"
+		return out, nil
+	}
+	claimKey := source.IdentityKey(run.Ref, &run.Task)
+	claim, acquired, err := r.store.ClaimByKey(claimKey, run.Task.Source, run.Task.ExternalID, run.ID, r.cfg.Defaults.ClaimTTL.Std())
+	if err != nil {
+		out.Status = "failed"
+		out.Err = fmt.Errorf("claim: %w", err)
+		return out, out.Err
+	}
+	if !acquired {
+		out.Status = "busy"
+		out.Reason = "claim ativo: outra execução está com esta tarefa"
+		return out, nil
+	}
+	defer func() {
+		if err := claim.Release(); err != nil {
+			r.pipe.Log.Warn("falha ao liberar claim", "task", run.Task.ExternalID, "error", err)
+		}
+	}()
+	stopHeartbeat := claim.KeepAlive(time.Minute)
+	defer stopHeartbeat()
+
+	if err := r.store.Put(state.TaskRecord{
+		Key:         run.Task.ClaimKey,
+		Source:      run.Task.Source,
+		ID:          run.Task.ExternalID,
+		Status:      "running",
+		RunID:       run.ID,
+		ContentHash: run.Task.ContentHash,
+	}); err != nil {
+		out.Status = "failed"
+		out.Err = err
+		return out, err
+	}
+	var src source.Source
+	if !opts.DisableWriteBack {
+		if opened, err := r.pipe.Sources.Open(run.Task.Source); err == nil {
+			src = opened
+			if writer, ok := src.(source.StatusWriter); ok {
+				if err := writer.MarkRunning(ctx, run.Ref, run.ID); err != nil {
+					r.pipe.Log.Warn("falha ao marcar tarefa em execução na fonte", "task", run.Task.ExternalID, "error", err)
+				}
+			}
+		}
+	}
+	pipe := r.pipe.WithLogger(r.pipe.Log.With("task", run.Task.ExternalID, "run_id", run.ID))
+	result, runErr := pipe.Resume(ctx, runID, opts)
+	if result != nil {
+		out.RunID = result.RunID
+		out.Stage = result.Stage
+		out.Branch = result.Branch
+		out.Worktree = result.Worktree
+		out.RunDir = result.RunDir
+		out.PRURL = result.PRURL
+		out.CostUSD = result.Usage.CostUSD
+		out.InputTokens = result.Usage.InputTokens
+		out.OutputTokens = result.Usage.OutputTokens
+	}
+	out.Err = runErr
+	switch {
+	case runErr == nil:
+		out.Status = "succeeded"
+	case errors.Is(runErr, pipeline.ErrPauseRequested):
+		out.Status = "paused"
+		out.Reason = "pausa solicitada; use aiw resume"
+	case errors.Is(runErr, pipeline.ErrPaused):
+		out.Status = "paused"
+		out.Reason = runErr.Error()
+	case errors.Is(runErr, pipeline.ErrNeedsInput):
+		out.Status = "needs_input"
+	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		out.Status = "canceled"
+	default:
+		out.Status = "failed"
+	}
+	record := state.TaskRecord{
+		Key:         run.Task.ClaimKey,
+		Source:      run.Task.Source,
+		ID:          run.Task.ExternalID,
+		RunID:       out.RunID,
+		ContentHash: run.Task.ContentHash,
+	}
+	switch out.Status {
+	case "succeeded":
+		record.Status = "succeeded"
+	case "paused":
+		record.Status = "paused"
+	case "needs_input":
+		record.Status = "needs_input"
+	case "canceled":
+		record.Status = "todo"
+	default:
+		record.Status = "failed"
+	}
+	if err := r.store.Put(record); err != nil {
+		r.pipe.Log.Warn("falha ao salvar estado da tarefa", "task", run.Task.ExternalID, "error", err)
+	}
+	if src != nil {
+		switch out.Status {
+		case "needs_input", "canceled":
+			if pending, ok := src.(source.PendingWriter); ok {
+				if err := pending.MarkPending(ctx, run.Ref); err != nil {
+					r.pipe.Log.Warn("falha ao devolver tarefa ao inbox", "task", run.Task.ExternalID, "error", err)
+				}
+			}
+		case "failed":
+			if result == nil {
+				if writer, ok := src.(source.StatusWriter); ok {
+					if err := writer.MarkFailed(ctx, run.Ref, runErr); err != nil {
+						r.pipe.Log.Warn("falha ao mover tarefa para failed", "task", run.Task.ExternalID, "error", err)
+					}
+				}
+			}
+		}
+	}
+	return out, runErr
+}
+
+func (r *Runner) Work(ctx context.Context, jobs []Job, workers int, drain <-chan struct{}, onOutcome func(Outcome)) []Outcome {
 	if workers < 1 {
 		workers = 1
 	}
@@ -265,6 +408,15 @@ func (r *Runner) Work(ctx context.Context, jobs []Job, workers int, onOutcome fu
 			for {
 				select {
 				case <-ctx.Done():
+					return
+				case <-drain:
+					return
+				default:
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-drain:
 					return
 				case job, ok := <-queue:
 					if !ok {

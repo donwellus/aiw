@@ -1,16 +1,13 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,6 +47,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 	var maxTasks int
 	var asJSON bool
 	var dryRun bool
+	var drainTimeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "work",
@@ -80,8 +78,8 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 			}
 			run := runner.New(cfg, store, p)
 
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
+			drain, ctx := newDrainState(drainTimeout)
+			defer drain.Close()
 
 			src, filter, err := openSource(cfg, sourceName)
 			if err != nil {
@@ -133,7 +131,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 				return nil
 			}
 
-			outcomes := run.Work(ctx, jobs, workers, func(outcome runner.Outcome) {
+			outcomes := run.Work(ctx, jobs, workers, drain.drain, func(outcome runner.Outcome) {
 				switch outcome.Status {
 				case "failed":
 					failures++
@@ -143,13 +141,24 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 				printWorkOutcome(out, asJSON, outcome)
 			})
 
-			if ctx.Err() != nil && len(outcomes) < len(jobs) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "cancelamento solicitado; %d tarefa(s) não iniciada(s)\n", len(jobs)-len(outcomes))
+			notStarted := len(jobs) - len(outcomes)
+			if drain.Draining() && ctx.Err() == nil {
+				if notStarted > 0 {
+					fmt.Fprintf(cmd.ErrOrStderr(), "drenado; %d tarefa(s) não iniciada(s)\n", notStarted)
+				}
+				if failures > 0 {
+					return fmt.Errorf("%d tarefa(s) falharam", failures)
+				}
+				return nil
+			}
+			if ctx.Err() != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "drenagem forçada; %d tarefa(s) não iniciada(s)\n", notStarted)
+				return errors.New("drenagem forçada")
 			}
 			if failures > 0 {
 				return fmt.Errorf("%d tarefa(s) falharam", failures)
 			}
-			if canceled > 0 || ctx.Err() != nil {
+			if canceled > 0 {
 				return errors.New("processamento cancelado")
 			}
 			return nil
@@ -168,6 +177,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().IntVar(&maxTasks, "max-tasks", 0, "máximo de tarefas a processar nesta execução")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "saída JSONL por tarefa")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "apenas lista as tarefas elegíveis")
+	cmd.Flags().DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute, "tempo máximo para drenar runs em andamento após SIGINT")
 	return cmd
 }
 

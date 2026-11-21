@@ -7,9 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -101,6 +99,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	var once bool
 	var statusAddr string
 	var webhookAddr string
+	var drainTimeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -140,8 +139,8 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				resolvedSource = cfg.DefaultSource
 			}
 			run := runner.New(cfg, store, p)
-			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
+			drain, ctx := newDrainState(drainTimeout)
+			defer drain.Close()
 
 			logOut := cmd.OutOrStdout()
 			if asJSON {
@@ -193,7 +192,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 			out := cmd.OutOrStdout()
 			warned := map[string]bool{}
 			cycleFailures := 0
-			for {
+			for !drain.Draining() {
 				cycleFailures = 0
 				candidates, skips, collectErr := run.Collect(ctx, src, filter, repoFlag, force, maxTasks)
 				if collectErr != nil {
@@ -232,9 +231,9 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 						},
 					})
 				}
-				if len(jobs) > 0 {
+				if len(jobs) > 0 && !drain.Draining() {
 					fmt.Fprintf(logOut, "[daemon] ciclo: %d tarefa(s)\n", len(jobs))
-					run.Work(ctx, jobs, workers, func(outcome runner.Outcome) {
+					run.Work(ctx, jobs, workers, drain.drain, func(outcome runner.Outcome) {
 						stats.add(outcome)
 						if outcome.Status == "failed" {
 							cycleFailures++
@@ -244,20 +243,31 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				}
 				stats.cycle(len(jobs))
 
+				if drain.Draining() {
+					break
+				}
 				if once {
 					break
 				}
 				select {
 				case <-ctx.Done():
-					fmt.Fprintln(logOut, "[daemon] encerrando")
-					return nil
+					break
+				case <-drain.drain:
+					break
 				case <-wake:
 					continue
 				case <-time.After(interval):
 				}
+				if drain.Draining() || ctx.Err() != nil {
+					break
+				}
 			}
 			if ctx.Err() != nil {
-				fmt.Fprintln(logOut, "[daemon] encerrado")
+				fmt.Fprintln(logOut, "[daemon] drenagem forçada; encerrado")
+				return fmt.Errorf("drenagem forçada")
+			}
+			if drain.Draining() {
+				fmt.Fprintln(logOut, "[daemon] drenado; encerrado")
 			}
 			if once && cycleFailures > 0 {
 				return fmt.Errorf("%d tarefa(s) falharam", cycleFailures)
@@ -281,6 +291,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&once, "once", false, "executa um único ciclo e encerra")
 	cmd.Flags().StringVar(&statusAddr, "status-addr", "", "endereço HTTP para /healthz e /status (ex.: 127.0.0.1:8787)")
 	cmd.Flags().StringVar(&webhookAddr, "webhook-addr", "", "endereço HTTP para webhooks (github) - ex.: 127.0.0.1:8788")
+	cmd.Flags().DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute, "tempo máximo para drenar runs em andamento após SIGINT")
 	return cmd
 }
 

@@ -145,6 +145,7 @@ aiw resume <run-id>
 | `aiw daemon [--interval 60s]` | processa continuamente em intervalos |
 | `aiw eval --suite <yaml>` | executa tarefas golden e mede sucesso/custo |
 | `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
+| `aiw pause <run-id>` | pausa no próximo boundary de estágio |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
@@ -206,6 +207,7 @@ aiw daemon --status-addr 127.0.0.1:8787       # /healthz e /status em JSON
 - Nunca abre prompt; gates humanos pausam a tarefa e liberam o slot.
 - SIGINT/SIGTERM encerra o ciclo, cancela runs em andamento, libera claims e devolve tarefas canceladas ao inbox.
 - Tarefas `paused`/`needs_input` ficam fora da fila até `resume` ou mudança de conteúdo.
+- SIGINT no `work`/daemon drena o que está em andamento; use `--drain-timeout` para limitar e segundo SIGINT para forçar.
 - **Webhooks GitHub** (`--webhook-addr`): o endpoint `/webhooks/github` valida HMAC (`X-Hub-Signature-256`), deduplica por `X-GitHub-Delivery`, responde 202 e acorda o ciclo do daemon. O payload não vira task direto: o daemon reconsulta a issue via `gh`. Use HTTPS/reverse proxy ou túnel em dev; o polling continua como fallback. Requer `webhook_secret_env` (default `GITHUB_WEBHOOK_SECRET`).
 
 ### Pasta doing opcional
@@ -256,6 +258,21 @@ cases:
 - O judge usa o engine/modelo configurado (`judge.engine`/`judge.model`) e só bloqueia quando `judge.threshold > 0`.
 - Similaridade de referência é informativa (Jaccard das linhas alteradas), não bloqueia.
 - Evals são sequenciais nesta versão.
+
+### Pausar e continuar
+
+```bash
+aiw pause <run-id>
+aiw resume <run-id>          # retoma pausa/gate/cancelamento
+```
+
+- `pause` grava um marker e o pipeline para **no boundary entre estágios**; o tool call atual termina.
+- Claim é liberado e a tarefa permanece em `doing` (folder) ou com label/estado de running (remotos).
+- `resume` reivindica de novo, reaplica `MarkRunning`, remove o marker e continua do próximo estágio.
+- Não há retomada no meio de um estágio: se o estágio falhou/cancelou, ele recomeça.
+- Em `work`/`daemon`, o **primeiro SIGINT** drena: para de enfileirar, termina o run atual e sai; `--drain-timeout` (default 5m) limita a espera.
+- **Segundo SIGINT** ou timeout força o cancelamento; runs canceladas podem ser retomadas com `aiw resume`.
+- Tarefas ainda não iniciadas permanecem no inbox/fila.
 
 ### Intake e gates automáticos
 
@@ -615,4 +632,5 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.
+- Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada automática de canceladas ao reiniciar `work`/daemon ainda não existe.
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.

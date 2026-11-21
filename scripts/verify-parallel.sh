@@ -177,7 +177,7 @@ FAILED=$( { grep -h -c '"status":"failed"' "$DIR/out1.jsonl" "$DIR/out2.jsonl" |
 assert_eq "$SUCCEEDED" 8 "tarefas concluídas nos dois pools"
 assert_eq "$FAILED" 0 "tarefas falhas nos dois pools"
 
-RUNS=$(find "$DIR/.aiw/runs" -name run.json | wc -l | tr -d ' ')
+RUNS=$( { find "$DIR/.aiw/runs" -name run.json 2>/dev/null || true; } | wc -l | tr -d ' ')
 DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
 CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
 RUNNING=$( { grep -l '"status": "running"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null || true; } | wc -l | tr -d ' ')
@@ -257,7 +257,7 @@ set -e
 assert_eq "$AE1" 0 "pool folder"
 assert_eq "$AE2" 0 "pool alias"
 SUCCEEDED=$( { grep -h -c '"status":"succeeded"' "$DIR/folder.jsonl" "$DIR/alias.jsonl" || true; } | awk '{s+=$1} END{print s+0}' )
-RUNS=$(find "$DIR/.aiw/runs" -name run.json | wc -l | tr -d ' ')
+RUNS=$( { find "$DIR/.aiw/runs" -name run.json 2>/dev/null || true; } | wc -l | tr -d ' ')
 DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
 DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
 CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
@@ -306,7 +306,7 @@ write_task "$DIR" "cancel-a" "Tarefa cancelável A"
 write_task "$DIR" "cancel-b" "Tarefa cancelável B"
 
 export AIW_SLOW_SECONDS=5
-"$AIW" --root "$DIR" work --workers 2 --auto --json >"$DIR/out-cancel.jsonl" 2>"$DIR/err-cancel.log" &
+"$AIW" --root "$DIR" work --workers 2 --auto --drain-timeout 1s --json >"$DIR/out-cancel.jsonl" 2>"$DIR/err-cancel.log" &
 PID=$!
 sleep 1
 kill -INT "$PID"
@@ -391,7 +391,86 @@ assert_eq "$DONE" 1 "tarefa em done após editar"
 assert_eq "$CLAIMS" 0 "claims após reprocessamento"
 pass "intake: needs_input, perguntas e reprocessamento após edição"
 
-# 5) Daemon: um ciclo batch contínuo com o mesmo pool.
+# 5) Pause/resume: pausa no boundary e retoma.
+DIR="$WORK/pause"
+new_project "$DIR"
+write_task "$DIR" "pause-a" "Tarefa pausável"
+
+export AIW_SLOW_SECONDS=0.5
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log" &
+PID=$!
+RUN_ID=""
+for i in $(seq 1 100); do
+  RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+runs = pathlib.Path(sys.argv[1]) / ".aiw/runs"
+for path in runs.glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "running":
+        print(data["id"])
+        break
+PYRUN
+)
+  [ -n "$RUN_ID" ] && break
+  sleep 0.1
+done
+[ -n "$RUN_ID" ] || fail "run não iniciou para o teste de pause"
+"$AIW" --root "$DIR" pause "$RUN_ID" >"$DIR/pause.log" 2>&1
+set +e
+wait "$PID"
+PAUSE_CODE=$?
+set -e
+assert_eq "$PAUSE_CODE" 0 "work após pausa"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$PAUSED" 1 "resultado paused"
+assert_eq "$DOING" 1 "tarefa pausada permanece em doing"
+assert_eq "$CLAIMS" 0 "claims após pausa"
+
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" resume "$RUN_ID" --auto >"$DIR/resume.log" 2>&1
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$DONE" 1 "tarefa concluída após resume"
+assert_eq "$CLAIMS" 0 "claims após resume"
+pass "pause: boundary, doing e resume"
+
+# 6) Drain: SIGINT espera o run em andamento e deixa o próximo no inbox.
+DIR="$WORK/drain"
+new_project "$DIR"
+write_task "$DIR" "drain-a" "Tarefa drain A"
+write_task "$DIR" "drain-b" "Tarefa drain B"
+
+export AIW_SLOW_SECONDS=0.15
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log" &
+PID=$!
+for i in $(seq 1 100); do
+  RUNS=$( { find "$DIR/.aiw/runs" -name run.json 2>/dev/null || true; } | wc -l | tr -d ' ')
+  [ "$RUNS" -ge 1 ] && break
+  sleep 0.1
+done
+kill -INT "$PID"
+set +e
+wait "$PID"
+DRAIN_CODE=$?
+set -e
+assert_eq "$DRAIN_CODE" 0 "drain gracioso"
+SUCCEEDED=$(grep -c '"status":"succeeded"' "$DIR/out.jsonl" || true)
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$SUCCEEDED" 1 "run em andamento concluída no drain"
+assert_eq "$DONE" 1 "uma tarefa concluída"
+assert_eq "$INBOX" 1 "uma tarefa pendente no inbox"
+assert_eq "$DOING" 0 "doing vazio após drain"
+assert_eq "$CLAIMS" 0 "claims após drain"
+pass "drain: SIGINT conclui o run atual e preserva a fila"
+
+# 7) Daemon: um ciclo batch contínuo com o mesmo pool.
 DIR="$WORK/daemon"
 new_project "$DIR"
 write_task "$DIR" "daemon-a" "Tarefa do daemon A"

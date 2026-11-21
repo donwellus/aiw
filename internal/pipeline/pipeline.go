@@ -26,9 +26,12 @@ import (
 )
 
 var (
-	ErrPaused     = errors.New("run pausada aguardando aprovação")
-	ErrNeedsInput = errors.New("tarefa precisa de input antes de continuar")
+	ErrPaused         = errors.New("run pausada aguardando aprovação")
+	ErrNeedsInput     = errors.New("tarefa precisa de input antes de continuar")
+	ErrPauseRequested = errors.New("pausa solicitada")
 )
+
+const PauseMarker = "PAUSE"
 
 type Options struct {
 	RunID            string
@@ -139,6 +142,7 @@ func (p *Pipeline) Resume(ctx context.Context, runID string, opts Options) (*Res
 	if run.Status == "needs_input" {
 		return nil, fmt.Errorf("run %s aguarda input; edite a tarefa na fonte e execute novamente", runID)
 	}
+	_ = os.Remove(filepath.Join(dir, PauseMarker))
 	if _, err := os.Stat(run.Worktree); err != nil {
 		return nil, fmt.Errorf("worktree %s não encontrada: %w", run.Worktree, err)
 	}
@@ -198,6 +202,13 @@ func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options)
 
 	runErr = p.execute(ctx, run, trace, opts, budget)
 	if runErr != nil {
+		if errors.Is(runErr, ErrPauseRequested) {
+			run.Status = "paused"
+			run.Error = ""
+			p.save(run, dir)
+			appendEvent(dir, "run.pause_requested", map[string]any{"stage": run.Stage})
+			return p.result(run, "pausada"), runErr
+		}
 		if errors.Is(runErr, ErrPaused) {
 			run.Status = "paused"
 			if err := saveRun(run, dir); err != nil {
@@ -264,6 +275,9 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			st.EndedAt = time.Now().UTC()
 			p.save(run, dir)
 			continue
+		}
+		if pauseRequested(dir) {
+			return ErrPauseRequested
 		}
 		st.StartedAt = time.Now().UTC()
 		st.Status = "running"
@@ -1130,6 +1144,11 @@ func (p *Pipeline) writeBack(ctx context.Context, run *RunState, runErr error, o
 		return
 	}
 	appendEvent(dir, "writeback.done", map[string]any{"success": runErr == nil})
+}
+
+func pauseRequested(runDir string) bool {
+	_, err := os.Stat(filepath.Join(runDir, PauseMarker))
+	return err == nil
 }
 
 func (p *Pipeline) save(run *RunState, dir string) {

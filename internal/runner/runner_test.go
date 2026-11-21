@@ -98,7 +98,7 @@ func TestWorkConcurrency(t *testing.T) {
 		jobs = append(jobs, Job{Task: task, Repo: "/tmp"})
 	}
 	var callbacks int32
-	outcomes := run.Work(context.Background(), jobs, 2, func(Outcome) { atomic.AddInt32(&callbacks, 1) })
+	outcomes := run.Work(context.Background(), jobs, 2, nil, func(Outcome) { atomic.AddInt32(&callbacks, 1) })
 	if len(outcomes) != 6 || callbacks != 6 {
 		t.Fatalf("outcomes=%d callbacks=%d", len(outcomes), callbacks)
 	}
@@ -121,7 +121,7 @@ func TestWorkCancel(t *testing.T) {
 	}
 	jobs := []Job{{Task: testTask("a"), Repo: "/tmp"}, {Task: testTask("b"), Repo: "/tmp"}}
 	done := make(chan []Outcome, 1)
-	go func() { done <- run.Work(ctx, jobs, 1, nil) }()
+	go func() { done <- run.Work(ctx, jobs, 1, nil, nil) }()
 	<-started
 	cancel()
 	select {
@@ -147,5 +147,34 @@ func TestCheckNeedsInput(t *testing.T) {
 	task.ContentHash = "novo"
 	if _, skip := run.Check(task, false); skip {
 		t.Fatal("hash alterado deveria ser elegível")
+	}
+}
+
+func TestWorkDrainFinishesInFlight(t *testing.T) {
+	run, _ := newTestRunner(t)
+	drain := make(chan struct{})
+	var started int32
+	run.execute = func(ctx context.Context, req Request) Outcome {
+		atomic.AddInt32(&started, 1)
+		time.Sleep(20 * time.Millisecond)
+		return Outcome{TaskID: req.Task.ExternalID, Status: "succeeded"}
+	}
+	jobs := []Job{
+		{Task: testTask("a"), Repo: "/tmp"},
+		{Task: testTask("b"), Repo: "/tmp"},
+		{Task: testTask("c"), Repo: "/tmp"},
+	}
+	outcomes := run.Work(context.Background(), jobs, 1, drain, func(Outcome) {
+		select {
+		case <-drain:
+		default:
+			close(drain)
+		}
+	})
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %d, esperado 1 durante drain", len(outcomes))
+	}
+	if got := atomic.LoadInt32(&started); got != 1 {
+		t.Fatalf("jobs iniciados = %d, esperado 1", got)
 	}
 }
