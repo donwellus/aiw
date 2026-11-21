@@ -18,6 +18,7 @@ import (
 
 	"github.com/donwellus/aiw/internal/config"
 	"github.com/donwellus/aiw/internal/engine"
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/sources"
 	"github.com/donwellus/aiw/internal/telemetry"
@@ -276,7 +277,7 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			p.save(run, dir)
 			continue
 		}
-		if pauseRequested(dir) {
+		if p.pauseRequested(dir) {
 			return ErrPauseRequested
 		}
 		st.StartedAt = time.Now().UTC()
@@ -1146,7 +1147,10 @@ func (p *Pipeline) writeBack(ctx context.Context, run *RunState, runErr error, o
 	appendEvent(dir, "writeback.done", map[string]any{"success": runErr == nil})
 }
 
-func pauseRequested(runDir string) bool {
+func (p *Pipeline) pauseRequested(runDir string) bool {
+	if pause.Active(p.Cfg.DataDir()) {
+		return true
+	}
 	_, err := os.Stat(filepath.Join(runDir, PauseMarker))
 	return err == nil
 }

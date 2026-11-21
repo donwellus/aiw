@@ -145,12 +145,13 @@ aiw resume <run-id>
 | `aiw daemon [--interval 60s]` | processa continuamente em intervalos |
 | `aiw eval --suite <yaml>` | executa tarefas golden e mede sucesso/custo |
 | `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
-| `aiw pause <run-id>` | pausa no próximo boundary de estágio |
+| `aiw pause [run-id]` | sem id: pausa global (`.aiw/PAUSE`); com id: pausa uma execução |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
 | `aiw runs [--json]` | lista execuções |
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
+| `aiw resume --all` | remove a pausa global e retoma runs paused/canceladas |
 
 Flags úteis de `run`: `--repo`, `--engine`, `--auto`, `--budget`, `--pr`, `--force`, `--no-write-back`.
 
@@ -188,7 +189,7 @@ aiw release <run-id>
 - Limites: `--workers` global, `max_concurrency` por engine e `max_test_concurrency` por repositório.
 - Tarefas de risco/`needs_input` pausam ou saem da fila sem derrubar os outros workers; `--auto` sobrepõe gates humanos.
 - Saída: uma linha por tarefa (`ok`, `falhou`, `needs_input`, `ignorada`, `cancelada`); `--json` emite JSONL.
-- Ctrl+C para de enfileirar, cancela runs em andamento, libera claims e devolve tarefas canceladas para `todo`.
+- Ctrl+C/SIGTERM drena: para de enfileirar e termina os runs em andamento; segundo Ctrl+C força o cancelamento.
 - `aiw release` serve para runs que morreram sem liberar o claim/estado.
 
 Limitações atuais do pool: `tasks/` é local ao clone; conectores remotos e evals são os próximos marcos.
@@ -205,9 +206,10 @@ aiw daemon --status-addr 127.0.0.1:8787       # /healthz e /status em JSON
 - Sem resumo global fixo: imprime uma linha por tarefa concluída e uma linha por ciclo quando há trabalho.
 - `/status` traz um resumo vivo (ciclos, totais por status, runs em andamento, claims); `/healthz` responde `ok`.
 - Nunca abre prompt; gates humanos pausam a tarefa e liberam o slot.
-- SIGINT/SIGTERM encerra o ciclo, cancela runs em andamento, libera claims e devolve tarefas canceladas ao inbox.
+- `aiw pause` sem run-id ativa o **modo idle**: o daemon para de coletar, mantém `/status`, `/healthz` e webhooks vivos e volta sozinho quando `aiw resume --all` remove `.aiw/PAUSE`.
 - Tarefas `paused`/`needs_input` ficam fora da fila até `resume` ou mudança de conteúdo.
-- SIGINT no `work`/daemon drena o que está em andamento; use `--drain-timeout` para limitar e segundo SIGINT para forçar.
+- SIGINT/SIGTERM drena o que está em andamento; `--drain-timeout` limita a espera e o segundo SIGINT força.
+- `--pause-poll` (default 10s) controla a checagem da pausa global no `work` e no idle do daemon.
 - **Webhooks GitHub** (`--webhook-addr`): o endpoint `/webhooks/github` valida HMAC (`X-Hub-Signature-256`), deduplica por `X-GitHub-Delivery`, responde 202 e acorda o ciclo do daemon. O payload não vira task direto: o daemon reconsulta a issue via `gh`. Use HTTPS/reverse proxy ou túnel em dev; o polling continua como fallback. Requer `webhook_secret_env` (default `GITHUB_WEBHOOK_SECRET`).
 
 ### Pasta doing opcional
@@ -262,14 +264,21 @@ cases:
 ### Pausar e continuar
 
 ```bash
-aiw pause <run-id>
+aiw pause                    # pausa global: para de agendar novas tarefas
+aiw resume --all             # remove a pausa global e retoma paused/canceladas
+aiw pause <run-id>           # pausa apenas uma execução
 aiw resume <run-id>          # retoma pausa/gate/cancelamento
 ```
 
-- `pause` grava um marker e o pipeline para **no boundary entre estágios**; o tool call atual termina.
+- `pause` por run grava um marker e o pipeline para **no boundary entre estágios**; o tool call atual termina.
 - Claim é liberado e a tarefa permanece em `doing` (folder) ou com label/estado de running (remotos).
 - `resume` reivindica de novo, reaplica `MarkRunning`, remove o marker e continua do próximo estágio.
 - Não há retomada no meio de um estágio: se o estágio falhou/cancelou, ele recomeça.
+- **Pausa global** (`aiw pause` sem id) grava `.aiw/PAUSE`:
+  - runs em andamento pausam no próximo boundary;
+  - `work` e `run` recusam iniciar novas tarefas;
+  - `daemon` fica **idle** (não coleta), mantendo status/webhooks, e volta quando o marker some;
+  - `resume <run-id>` é bloqueado; use `resume --all` para limpar o marker e retomar paused/canceladas.
 - Em `work`/`daemon`, o **primeiro SIGINT** drena: para de enfileirar, termina o run atual e sai; `--drain-timeout` (default 5m) limita a espera.
 - **Segundo SIGINT** ou timeout força o cancelamento; runs canceladas podem ser retomadas com `aiw resume`.
 - Tarefas ainda não iniciadas permanecem no inbox/fila.
@@ -632,5 +641,5 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.
-- Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada automática de canceladas ao reiniciar `work`/daemon ainda não existe.
+- Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.

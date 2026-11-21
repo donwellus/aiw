@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/state"
@@ -48,6 +49,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 	var asJSON bool
 	var dryRun bool
 	var drainTimeout time.Duration
+	var pausePoll time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "work",
@@ -63,6 +65,9 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 			}
 			if workers < 1 {
 				return errors.New("--workers precisa ser >= 1")
+			}
+			if pause.Active(cfg.DataDir()) {
+				return errors.New("pausa global ativa; use aiw resume --all")
 			}
 
 			p := pipeline.New(cfg)
@@ -80,6 +85,8 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 
 			drain, ctx := newDrainState(drainTimeout)
 			defer drain.Close()
+			stopWatch := pause.Watch(ctx, cfg.DataDir(), pausePoll, drain.Pause)
+			defer stopWatch()
 
 			src, filter, err := openSource(cfg, sourceName)
 			if err != nil {
@@ -143,7 +150,9 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 
 			notStarted := len(jobs) - len(outcomes)
 			if drain.Draining() && ctx.Err() == nil {
-				if notStarted > 0 {
+				if pause.Active(cfg.DataDir()) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "pausa global ativa; %d tarefa(s) não iniciada(s)\n", notStarted)
+				} else if notStarted > 0 {
 					fmt.Fprintf(cmd.ErrOrStderr(), "drenado; %d tarefa(s) não iniciada(s)\n", notStarted)
 				}
 				if failures > 0 {
@@ -178,6 +187,7 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "saída JSONL por tarefa")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "apenas lista as tarefas elegíveis")
 	cmd.Flags().DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute, "tempo máximo para drenar runs em andamento após SIGINT")
+	cmd.Flags().DurationVar(&pausePoll, "pause-poll", 10*time.Second, "intervalo de checagem da pausa global")
 	return cmd
 }
 

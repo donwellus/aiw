@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/state"
@@ -36,6 +37,9 @@ func newRunCommand(opts *rootOptions) *cobra.Command {
 			cfg, err := opts.load()
 			if err != nil {
 				return err
+			}
+			if pause.Active(cfg.DataDir()) {
+				return errors.New("pausa global ativa; use aiw resume --all")
 			}
 			p := pipeline.New(cfg)
 			defer closeTelemetry(p)

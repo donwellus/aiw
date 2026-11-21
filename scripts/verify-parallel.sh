@@ -438,6 +438,105 @@ assert_eq "$DONE" 1 "tarefa concluída após resume"
 assert_eq "$CLAIMS" 0 "claims após resume"
 pass "pause: boundary, doing e resume"
 
+# 5b) Pausa global: work pausa, run bloqueado, daemon idle e resume --all.
+DIR="$WORK/global-pause"
+new_project "$DIR"
+write_task "$DIR" "global-a" "Tarefa pausa global A"
+write_task "$DIR" "global-b" "Tarefa pausa global B"
+
+export AIW_SLOW_SECONDS=0.5
+"$AIW" --root "$DIR" work --workers 1 --auto --pause-poll 50ms --json >"$DIR/out.jsonl" 2>"$DIR/err.log" &
+PID=$!
+RUN_ID=""
+for i in $(seq 1 100); do
+  RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+runs = pathlib.Path(sys.argv[1]) / ".aiw/runs"
+for path in runs.glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "running":
+        print(data["id"])
+        break
+PYRUN
+)
+  [ -n "$RUN_ID" ] && break
+  sleep 0.1
+done
+[ -n "$RUN_ID" ] || fail "run não iniciou para o teste de pausa global"
+"$AIW" --root "$DIR" pause >"$DIR/pause-global.log" 2>&1
+[ -f "$DIR/.aiw/PAUSE" ] || fail "marker de pausa global não criado"
+set +e
+wait "$PID"
+GLOBAL_WORK_CODE=$?
+set -e
+assert_eq "$GLOBAL_WORK_CODE" 0 "work após pausa global"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+assert_eq "$PAUSED" 1 "resultado paused na pausa global"
+assert_eq "$INBOX" 1 "tarefa não iniciada permanece no inbox"
+assert_eq "$DOING" 1 "tarefa pausada permanece em doing"
+
+set +e
+"$AIW" --root "$DIR" run --task global-b >"$DIR/blocked.log" 2>&1
+BLOCKED_CODE=$?
+set -e
+assert_eq "$BLOCKED_CODE" 1 "run bloqueado pela pausa global"
+BLOCKED=$(grep -c 'pausa global ativa' "$DIR/blocked.log" || true)
+assert_eq "$BLOCKED" 1 "mensagem de bloqueio do run"
+
+"$AIW" --root "$DIR" daemon --interval 100ms --pause-poll 100ms --status-addr 127.0.0.1:0 --auto >"$DIR/daemon.log" 2>"$DIR/daemon.err" &
+DAEMON_PID=$!
+ADDR=""
+for i in $(seq 1 50); do
+  ADDR=$(grep -o 'http://[^/]*' "$DIR/daemon.log" 2>/dev/null | head -1 || true)
+  [ -n "$ADDR" ] && break
+  sleep 0.1
+done
+[ -n "$ADDR" ] || fail "daemon não publicou status na pausa global"
+for i in $(seq 1 50); do
+  grep -q 'pausa global ativa; idle' "$DIR/daemon.log" 2>/dev/null && break
+  sleep 0.1
+done
+grep -q 'pausa global ativa; idle' "$DIR/daemon.log" || fail "daemon não entrou em idle"
+curl -fsS "$ADDR/status" >"$DIR/status-paused.json"
+python3 - "$DIR/status-paused.json" <<'PYSTATUS'
+import json
+import sys
+status = json.load(open(sys.argv[1]))
+assert status["paused"] is True, status
+PYSTATUS
+sleep 0.4
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+assert_eq "$INBOX" 1 "daemon idle não coleta tarefas"
+
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" resume --all --auto >"$DIR/resume-all.log" 2>&1
+grep -q 'pausa global removida' "$DIR/resume-all.log" || fail "resume --all não removeu a pausa global"
+[ ! -f "$DIR/.aiw/PAUSE" ] || fail "marker de pausa global permaneceu"
+for i in $(seq 1 100); do
+  DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+  [ "$DONE" = "2" ] && break
+  sleep 0.1
+done
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$DONE" 2 "tarefas concluídas após resume --all"
+assert_eq "$INBOX" 0 "inbox vazio após resume --all"
+assert_eq "$DOING" 0 "doing vazio após resume --all"
+assert_eq "$CLAIMS" 0 "claims após resume --all"
+kill -INT "$DAEMON_PID"
+set +e
+wait "$DAEMON_PID"
+DAEMON_CODE=$?
+set -e
+assert_eq "$DAEMON_CODE" 0 "daemon encerrado após resume --all"
+pass "pausa global: work pausa, run bloqueado, daemon idle e resume --all"
+
 # 6) Drain: SIGINT espera o run em andamento e deixa o próximo no inbox.
 DIR="$WORK/drain"
 new_project "$DIR"

@@ -10,11 +10,12 @@ import (
 )
 
 type drainState struct {
-	drain  chan struct{}
-	done   chan struct{}
-	sigs   chan os.Signal
-	cancel context.CancelFunc
-	once   sync.Once
+	drain     chan struct{}
+	done      chan struct{}
+	sigs      chan os.Signal
+	cancel    context.CancelFunc
+	once      sync.Once
+	pauseOnce sync.Once
 }
 
 func newDrainState(timeout time.Duration) (*drainState, context.Context) {
@@ -29,7 +30,7 @@ func newDrainState(timeout time.Duration) (*drainState, context.Context) {
 	go func() {
 		select {
 		case <-state.sigs:
-			close(state.drain)
+			state.Pause()
 			select {
 			case <-state.sigs:
 				cancel()
@@ -41,6 +42,10 @@ func newDrainState(timeout time.Duration) (*drainState, context.Context) {
 		}
 	}()
 	return state, ctx
+}
+
+func (d *drainState) Pause() {
+	d.pauseOnce.Do(func() { close(d.drain) })
 }
 
 func (d *drainState) Draining() bool {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
 	"github.com/donwellus/aiw/internal/state"
@@ -24,18 +25,20 @@ type daemonStats struct {
 	interval  time.Duration
 	workers   int
 	source    string
+	dataDir   string
 	cycles    int
 	lastCycle time.Time
 	lastTasks int
 	totals    map[string]int
 }
 
-func newDaemonStats(interval time.Duration, workers int, sourceName string) *daemonStats {
+func newDaemonStats(interval time.Duration, workers int, sourceName, dataDir string) *daemonStats {
 	return &daemonStats{
 		startedAt: time.Now().UTC(),
 		interval:  interval,
 		workers:   workers,
 		source:    sourceName,
+		dataDir:   dataDir,
 		totals:    map[string]int{},
 	}
 }
@@ -79,6 +82,7 @@ func (s *daemonStats) snapshot(store *state.Store) map[string]any {
 		"last_cycle_tasks": s.lastTasks,
 		"totals":           totals,
 		"running":          running,
+		"paused":           pause.Active(s.dataDir),
 		"claims":           store.Claims(),
 	}
 }
@@ -100,6 +104,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	var statusAddr string
 	var webhookAddr string
 	var drainTimeout time.Duration
+	var pausePoll time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -178,7 +183,10 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				fmt.Fprintf(logOut, "[daemon] webhook em http://%s/webhooks/github\n", addr)
 			}
 
-			stats := newDaemonStats(interval, workers, src.Name())
+			if pausePoll <= 0 {
+				pausePoll = 10 * time.Second
+			}
+			stats := newDaemonStats(interval, workers, src.Name(), cfg.DataDir())
 			if statusAddr != "" {
 				shutdown, addr, err := startDaemonStatus(ctx, statusAddr, stats, store)
 				if err != nil {
@@ -192,7 +200,26 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 			out := cmd.OutOrStdout()
 			warned := map[string]bool{}
 			cycleFailures := 0
+			idleLogged := false
+		loop:
 			for !drain.Draining() {
+				if pause.Active(cfg.DataDir()) {
+					if once {
+						fmt.Fprintln(logOut, "[daemon] pausa global ativa; --once sem ciclo")
+						break
+					}
+					if !idleLogged {
+						fmt.Fprintf(logOut, "[daemon] pausa global ativa; idle (checando a cada %s)\n", pausePoll)
+						idleLogged = true
+					}
+					select {
+					case <-ctx.Done():
+					case <-drain.drain:
+					case <-time.After(pausePoll):
+					}
+					continue
+				}
+				idleLogged = false
 				cycleFailures = 0
 				candidates, skips, collectErr := run.Collect(ctx, src, filter, repoFlag, force, maxTasks)
 				if collectErr != nil {
@@ -231,15 +258,17 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 						},
 					})
 				}
-				if len(jobs) > 0 && !drain.Draining() {
+				if len(jobs) > 0 && !drain.Draining() && !pause.Active(cfg.DataDir()) {
 					fmt.Fprintf(logOut, "[daemon] ciclo: %d tarefa(s)\n", len(jobs))
-					run.Work(ctx, jobs, workers, drain.drain, func(outcome runner.Outcome) {
+					cycleCh, stopCycle := cycleDrain(ctx, drain.drain, cfg.DataDir(), pausePoll)
+					run.Work(ctx, jobs, workers, cycleCh, func(outcome runner.Outcome) {
 						stats.add(outcome)
 						if outcome.Status == "failed" {
 							cycleFailures++
 						}
 						printWorkOutcome(out, asJSON, outcome)
 					})
+					stopCycle()
 				}
 				stats.cycle(len(jobs))
 
@@ -251,15 +280,12 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				}
 				select {
 				case <-ctx.Done():
-					break
+					break loop
 				case <-drain.drain:
-					break
+					break loop
 				case <-wake:
 					continue
 				case <-time.After(interval):
-				}
-				if drain.Draining() || ctx.Err() != nil {
-					break
 				}
 			}
 			if ctx.Err() != nil {
@@ -292,7 +318,46 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&statusAddr, "status-addr", "", "endereço HTTP para /healthz e /status (ex.: 127.0.0.1:8787)")
 	cmd.Flags().StringVar(&webhookAddr, "webhook-addr", "", "endereço HTTP para webhooks (github) - ex.: 127.0.0.1:8788")
 	cmd.Flags().DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute, "tempo máximo para drenar runs em andamento após SIGINT")
+	cmd.Flags().DurationVar(&pausePoll, "pause-poll", 10*time.Second, "intervalo de checagem da pausa global no modo idle")
 	return cmd
+}
+
+func cycleDrain(ctx context.Context, signal <-chan struct{}, dataDir string, interval time.Duration) (<-chan struct{}, func()) {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ch := make(chan struct{})
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeCh := func() { closeOnce.Do(func() { close(ch) }) }
+	go func() {
+		if pause.Active(dataDir) {
+			closeCh()
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				closeCh()
+				return
+			case <-signal:
+				closeCh()
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				if pause.Active(dataDir) {
+					closeCh()
+					return
+				}
+			}
+		}
+	}()
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(done) }) }
+	return ch, stop
 }
 
 func startDaemonStatus(ctx context.Context, addr string, stats *daemonStats, store *state.Store) (func(), string, error) {
