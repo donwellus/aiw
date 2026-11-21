@@ -103,7 +103,7 @@ func TestCreateDiffCommitRemove(t *testing.T) {
 		t.Fatalf("DefaultBranch = %q", got)
 	}
 
-	if err := wt.Remove(ctx); err != nil {
+	if err := wt.Remove(ctx, false); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
@@ -135,5 +135,75 @@ func TestCreateConcurrent(t *testing.T) {
 	count := strings.Count(output, "worktree ")
 	if count < 4 {
 		t.Fatalf("worktrees = %d, esperado 4 (principal + 3)", count)
+	}
+}
+
+func TestRemoveSafetyAndBranches(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	dataDir := t.TempDir()
+
+	dirty, err := Create(ctx, repo, dataDir, "run-dirty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dirty.Path, "dirty.txt"), []byte("pendente\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := dirty.Remove(ctx, false); err == nil {
+		t.Fatal("remoção segura deveria falhar com worktree sujo")
+	}
+	if err := dirty.Remove(ctx, true); err != nil {
+		t.Fatalf("remoção forçada: %v", err)
+	}
+
+	unmerged, err := Create(ctx, repo, dataDir, "run-unmerged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(unmerged.Path, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unmerged.Commit(ctx, "aiw: unmerged"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := BranchExists(ctx, repo, unmerged.Branch); err != nil || !ok {
+		t.Fatalf("BranchExists = %v, %v", ok, err)
+	}
+	if merged, err := BranchMerged(ctx, repo, unmerged.Branch, "main"); err != nil || merged {
+		t.Fatalf("BranchMerged = %v, %v", merged, err)
+	}
+	if err := unmerged.Remove(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteBranch(ctx, repo, unmerged.Branch, false); err == nil {
+		t.Fatal("branch não merged deveria falhar com -d")
+	}
+	if err := DeleteBranch(ctx, repo, unmerged.Branch, true); err != nil {
+		t.Fatalf("delete forçado: %v", err)
+	}
+
+	merged, err := Create(ctx, repo, dataDir, "run-merged")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(merged.Path, "merged.txt"), []byte("merged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := merged.Commit(ctx, "aiw: merged"); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "merge", "--no-ff", merged.Branch, "-m", "merge run")
+	if ok, err := BranchMerged(ctx, repo, merged.Branch, "main"); err != nil || !ok {
+		t.Fatalf("BranchMerged após merge = %v, %v", ok, err)
+	}
+	if err := merged.Remove(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteBranch(ctx, repo, merged.Branch, false); err != nil {
+		t.Fatalf("delete merged: %v", err)
+	}
+	if ok, err := BranchExists(ctx, repo, merged.Branch); err != nil || ok {
+		t.Fatalf("branch ainda existe: %v, %v", ok, err)
 	}
 }

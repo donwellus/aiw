@@ -117,14 +117,19 @@ func (w *Worktree) Push(ctx context.Context) error {
 	return err
 }
 
-func (w *Worktree) Remove(ctx context.Context) error {
+func (w *Worktree) Remove(ctx context.Context, force bool) error {
 	unlock := lockRepo(w.Repo)
 	fsUnlock, lockErr := lockWorktreeFS(ctx, w.Repo)
 	if lockErr != nil {
 		unlock()
 		return lockErr
 	}
-	_, err := git(ctx, w.Repo, "worktree", "remove", "--force", w.Path)
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, w.Path)
+	_, err := git(ctx, w.Repo, args...)
 	fsUnlock()
 	unlock()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -132,6 +137,69 @@ func (w *Worktree) Remove(ctx context.Context) error {
 			return nil
 		}
 	}
+	return err
+}
+
+func BranchExists(ctx context.Context, repo, branch string) (bool, error) {
+	if strings.TrimSpace(branch) == "" {
+		return false, nil
+	}
+	_, err := git(ctx, repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+func BranchMerged(ctx context.Context, repo, branch, base string) (bool, error) {
+	if strings.TrimSpace(branch) == "" || strings.TrimSpace(base) == "" {
+		return false, nil
+	}
+	_, err := git(ctx, repo, "merge-base", "--is-ancestor", branch, base)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+func DeleteBranch(ctx context.Context, repo, branch string, force bool) error {
+	if strings.TrimSpace(branch) == "" {
+		return errors.New("branch vazia")
+	}
+	unlock := lockRepo(repo)
+	fsUnlock, lockErr := lockWorktreeFS(ctx, repo)
+	if lockErr != nil {
+		unlock()
+		return lockErr
+	}
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	_, err := git(ctx, repo, "branch", flag, branch)
+	fsUnlock()
+	unlock()
+	return err
+}
+
+func Prune(ctx context.Context, repo string) error {
+	unlock := lockRepo(repo)
+	fsUnlock, lockErr := lockWorktreeFS(ctx, repo)
+	if lockErr != nil {
+		unlock()
+		return lockErr
+	}
+	_, err := git(ctx, repo, "worktree", "prune", "--expire", "now")
+	fsUnlock()
+	unlock()
 	return err
 }
 

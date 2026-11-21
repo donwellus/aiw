@@ -689,6 +689,72 @@ PYREPORT
 "$AIW" --root "$DIR" resume --all >/dev/null
 pass "report: tabela, json, yaml, md, html, source opcional e pausa"
 
+# 9) Clean: dry-run, remoção de worktrees e branches com force.
+DIR="$WORK/clean"
+new_project "$DIR"
+write_task "$DIR" "clean-a" "Tarefa clean A"
+write_task "$DIR" "clean-b" "Tarefa clean B"
+
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 2 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+
+WORKTREES=$(find "$DIR/.aiw/worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+BRANCHES=$(git -C "$DIR" branch --list 'aiw/*' | wc -l | tr -d ' ')
+RUNS=$(find "$DIR/.aiw/runs" -name run.json | wc -l | tr -d ' ')
+assert_eq "$WORKTREES" 2 "worktrees antes do clean"
+assert_eq "$BRANCHES" 2 "branches antes do clean"
+assert_eq "$RUNS" 2 "runs antes do clean"
+
+"$AIW" --root "$DIR" clean --dry-run --json >"$DIR/clean-dry.json"
+python3 - "$DIR/clean-dry.json" <<'PYCLEAN'
+import json
+import sys
+result = json.load(open(sys.argv[1]))
+assert result["dry_run"] is True, result
+summary = result["summary"]
+assert summary["runs"] == 2, summary
+assert summary["worktrees_removed"] == 2, summary
+assert summary["branches_deleted"] == 0, summary
+assert summary["errors"] == 0, summary
+PYCLEAN
+WORKTREES=$(find "$DIR/.aiw/worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+BRANCHES=$(git -C "$DIR" branch --list 'aiw/*' | wc -l | tr -d ' ')
+assert_eq "$WORKTREES" 2 "dry-run não remove worktrees"
+assert_eq "$BRANCHES" 2 "dry-run não remove branches"
+
+"$AIW" --root "$DIR" clean --json >"$DIR/clean.json"
+python3 - "$DIR/clean.json" <<'PYCLEAN'
+import json
+import sys
+result = json.load(open(sys.argv[1]))
+summary = result["summary"]
+assert result["dry_run"] is False, result
+assert summary["worktrees_removed"] == 2, summary
+assert summary["branches_deleted"] == 0, summary
+assert summary["errors"] == 0, summary
+PYCLEAN
+WORKTREES=$(find "$DIR/.aiw/worktrees" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+BRANCHES=$(git -C "$DIR" branch --list 'aiw/*' | wc -l | tr -d ' ')
+RUNS=$(find "$DIR/.aiw/runs" -name run.json | wc -l | tr -d ' ')
+assert_eq "$WORKTREES" 0 "worktrees após clean"
+assert_eq "$BRANCHES" 2 "branches não merged preservadas"
+assert_eq "$RUNS" 2 "runs preservadas após clean"
+
+"$AIW" --root "$DIR" clean --force --json >"$DIR/clean-force.json"
+python3 - "$DIR/clean-force.json" <<'PYCLEAN'
+import json
+import sys
+result = json.load(open(sys.argv[1]))
+summary = result["summary"]
+assert summary["branches_deleted"] == 2, summary
+assert summary["errors"] == 0, summary
+PYCLEAN
+BRANCHES=$(git -C "$DIR" branch --list 'aiw/*' | wc -l | tr -d ' ')
+WORKTREES=$(git -C "$DIR" worktree list --porcelain | grep -c '^worktree ' || true)
+assert_eq "$BRANCHES" 0 "branches após clean --force"
+assert_eq "$WORKTREES" 1 "somente o worktree principal permanece"
+pass "clean: dry-run, worktrees, branches merged e force"
+
 # 7) Release: devolve tarefa pausada em doing para o inbox.
 DIR="$WORK/release"
 new_project "$DIR"

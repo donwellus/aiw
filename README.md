@@ -150,6 +150,7 @@ aiw resume <run-id>
 | `aiw runs [--json]` | lista execuções |
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
+| `aiw clean [--dry-run] [--force] [--keep-branches] [--json]` | remove worktrees e branches de runs terminais |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 | `aiw resume --all` | remove a pausa global e retoma runs paused/canceladas |
@@ -192,6 +193,25 @@ aiw report --source folder --md         # inclui inbox/doing/done/failed do fold
 - `--json`, `--yaml`, `--md` e `--html` são mutuamente exclusivos; a tabela é o padrão.
 - Alertas incluem failed, needs_input, paused, pausa global, claims vencidos e estado apontando para run ausente.
 - `aiw status` continua sendo o resumo operacional curto; use `aiw report` para visão histórica/completa.
+
+### Limpeza (`aiw clean`)
+
+```bash
+aiw clean --dry-run                      # mostra o que seria removido
+aiw clean                                # worktrees terminais + branches merged
+aiw clean --keep-branches                # remove só worktrees
+aiw clean --force                        # inclui worktrees sujos e branches não merged
+aiw clean --status succeeded --json      # restringe o status e gera JSON
+```
+
+- Padrão: runs `succeeded`, `failed` e `canceled`, sem claim ou estado ativo.
+- Worktree é removido com `git worktree remove`; se estiver sujo, é preservado até `--force`.
+- Branch local `aiw/<run-id>` só é apagada se estiver merged na branch padrão; `--force` usa `-D`.
+- Nunca remove `.aiw/runs`: custo/histórico do `report` permanece.
+- Após remover ou detectar worktree ausente, roda `git worktree prune`.
+- Proteção contra corrida: `clean` adquire o claim da tarefa, relê `run.json` e só então remove.
+- `--force` não remove run ativa/claim ativo; branch remota/PR não é tocada.
+- Merge é verificado localmente, sem `fetch`; branches squash-merged ou remotas exigem `--force` consciente.
 
 ### Paralelismo (`aiw work`)
 
@@ -645,7 +665,7 @@ docs/adr             decisões de arquitetura
 - `security.yml`: gitleaks no histórico, `govulncheck` e dependency review em pull requests.
 - Dependabot semanal para módulos Go e GitHub Actions.
 
-O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` roda o eval smoke e usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing`, daemon, pausa global, `report` em todos os formatos e release.
+O smoke test usa o engine `fake`: valida o pipeline inteiro (intake, validadores e entrega) sem LLM, sem rede e sem custo. O `make verify` roda o eval smoke e usa um engine `exec` lento e dois pools concorrentes para provar exactly-once, isolamento de artefatos, falha independente, cancelamento, `needs_input` → edição → reprocessamento, pasta `doing`, daemon, pausa global, `report` em todos os formatos, `clean` e release.
 
 ## Licença
 
@@ -663,3 +683,4 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.
 - Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.
+- Worktrees/branches não são removidos automaticamente após a entrega; use `aiw clean` (branches remotas/PRs não são apagadas).

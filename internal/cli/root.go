@@ -50,6 +50,7 @@ func NewRoot() *cobra.Command {
 		newRunsCommand(opts),
 		newStatusCommand(opts),
 		newReportCommand(opts),
+		newCleanCommand(opts),
 		newApproveCommand(opts),
 		newResumeCommand(opts),
 		newVersionCommand(),
