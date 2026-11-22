@@ -8,9 +8,10 @@ import (
 )
 
 func newMCPCommand(opts *rootOptions) *cobra.Command {
-	return &cobra.Command{
+	var allowWrite bool
+	cmd := &cobra.Command{
 		Use:   "mcp",
-		Short: "Servidor MCP read-only para o coordenador",
+		Short: "Servidor MCP para o coordenador",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := opts.load()
@@ -21,8 +22,10 @@ func newMCPCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			server := mcpserver.New(cfg, store, versionString(), cmd.InOrStdin(), cmd.OutOrStdout())
+			server := mcpserver.New(cfg, store, versionString(), allowWrite, cmd.InOrStdin(), cmd.OutOrStdout())
 			return server.Serve(cmd.Context())
 		},
 	}
+	cmd.Flags().BoolVar(&allowWrite, "allow-write", false, "habilita pause/resume/approve/release/clean")
+	return cmd
 }

@@ -6,9 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/donwellus/aiw/internal/pipeline"
-	"github.com/donwellus/aiw/internal/source"
-	"github.com/donwellus/aiw/internal/sources"
+	"github.com/donwellus/aiw/internal/control"
 	"github.com/donwellus/aiw/internal/state"
 )
 
@@ -26,49 +24,22 @@ func newReleaseCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runID := args[0]
-			record, recordFound := store.FindByRunID(runID)
-			run, runErr := pipeline.LoadRun(cfg, runID)
-			claim, claimFound, err := store.ReleaseClaimByRunID(runID)
+			result, err := control.Release(context.Background(), cfg, store, args[0])
 			if err != nil {
 				return err
 			}
-			if !recordFound && !claimFound {
-				return fmt.Errorf("run %s não encontrada no estado nem nos claims", runID)
+			out := cmd.OutOrStdout()
+			if result.Claim != nil {
+				fmt.Fprintf(out, "claim liberado: %s:%s (pid %d)\n", result.Claim.Source, result.Claim.ID, result.Claim.PID)
 			}
-			if claimFound {
-				fmt.Fprintf(cmd.OutOrStdout(), "claim liberado: %s:%s (pid %d)\n", claim.Source, claim.ID, claim.PID)
+			if result.TaskMarked {
+				fmt.Fprintf(out, "tarefa %s:%s marcada como todo\n", result.TaskSource, result.TaskID)
 			}
-			if recordFound {
-				record.Status = "todo"
-				record.RunID = ""
-				if err := store.Put(record); err != nil {
-					return err
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "tarefa %s:%s marcada como todo\n", record.Source, record.ID)
+			if result.SourceReturned {
+				fmt.Fprintln(out, "tarefa devolvida ao inbox")
 			}
-
-			sourceName := ""
-			ref := source.Ref{}
-			if runErr == nil {
-				sourceName = run.Source
-				ref = run.Ref
-			}
-			if sourceName == "" && claimFound {
-				sourceName = claim.Source
-				ref = source.Ref{Source: claim.Source, ID: claim.ID}
-			}
-			if sourceName != "" {
-				src, err := sources.NewRegistry(cfg).Open(sourceName)
-				if err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "aviso: fonte indisponível para devolver tarefa: %v\n", err)
-				} else if releaser, ok := src.(source.Releaser); ok {
-					if err := releaser.Release(context.Background(), ref); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "aviso: falha ao devolver tarefa ao inbox: %v\n", err)
-					} else {
-						fmt.Fprintln(cmd.OutOrStdout(), "tarefa devolvida ao inbox")
-					}
-				}
+			for _, warning := range result.Warnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "aviso: %s\n", warning)
 			}
 			return nil
 		},

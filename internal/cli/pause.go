@@ -2,14 +2,10 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/donwellus/aiw/internal/pause"
-	"github.com/donwellus/aiw/internal/pipeline"
+	"github.com/donwellus/aiw/internal/control"
 )
 
 func newPauseCommand(opts *rootOptions) *cobra.Command {
@@ -22,41 +18,31 @@ func newPauseCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if len(args) == 0 {
-				if pause.Active(cfg.DataDir()) {
-					fmt.Fprintln(cmd.OutOrStdout(), "pausa global já está ativa")
-					return nil
-				}
-				if err := pause.Set(cfg.DataDir(), "manual"); err != nil {
-					return err
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), "pausa global solicitada")
-				fmt.Fprintln(cmd.OutOrStdout(), "runs em andamento pausam no próximo boundary de estágio; work/daemon param de pegar novas tarefas")
-				fmt.Fprintln(cmd.OutOrStdout(), "para retomar: aiw resume --all")
-				return nil
+			runID := ""
+			if len(args) > 0 {
+				runID = args[0]
 			}
-			run, err := pipeline.LoadRun(cfg, args[0])
+			result, err := control.Pause(cfg, runID, "manual")
 			if err != nil {
 				return err
 			}
-			switch run.Status {
-			case "succeeded", "failed", "canceled":
-				return fmt.Errorf("run %s já foi encerrada com status %s", run.ID, run.Status)
-			case "needs_input":
-				return fmt.Errorf("run %s aguarda input; pausa não se aplica", run.ID)
-			case "paused":
-				fmt.Fprintf(cmd.OutOrStdout(), "run %s já está pausada; use aiw resume %s\n", run.ID, run.ID)
+			out := cmd.OutOrStdout()
+			if result.Scope == "global" {
+				if result.AlreadyActive {
+					fmt.Fprintln(out, "pausa global já está ativa")
+					return nil
+				}
+				fmt.Fprintln(out, "pausa global solicitada")
+				fmt.Fprintln(out, "runs em andamento pausam no próximo boundary de estágio; work/daemon param de pegar novas tarefas")
+				fmt.Fprintln(out, "para retomar: aiw resume --all")
 				return nil
 			}
-			marker := filepath.Join(cfg.RunsDir(), run.ID, pipeline.PauseMarker)
-			if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
-				return err
+			if result.AlreadyActive {
+				fmt.Fprintf(out, "run %s já está pausada; use aiw resume %s\n", result.RunID, result.RunID)
+				return nil
 			}
-			if err := os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "pausa solicitada para %s; o pipeline para no próximo boundary de estágio\n", run.ID)
-			fmt.Fprintf(cmd.OutOrStdout(), "para forçar agora, envie SIGINT ao processo dono da run\n")
+			fmt.Fprintf(out, "pausa solicitada para %s; o pipeline para no próximo boundary de estágio\n", result.RunID)
+			fmt.Fprintln(out, "para forçar agora, envie SIGINT ao processo dono da run")
 			return nil
 		},
 	}

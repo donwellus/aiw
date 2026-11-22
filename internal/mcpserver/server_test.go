@@ -57,7 +57,7 @@ func newTestServer(t *testing.T) (*Server, *config.Config, *state.Store) {
 	if err := os.WriteFile(filepath.Join(cfg.RunsDir(), run.ID, "events.jsonl"), []byte(event), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return New(cfg, store, "test", strings.NewReader(""), &bytes.Buffer{}), cfg, store
+	return New(cfg, store, "test", false, strings.NewReader(""), &bytes.Buffer{}), cfg, store
 }
 
 func serve(t *testing.T, server *Server, input string) []testResponse {
@@ -186,4 +186,60 @@ func toolStructured(t *testing.T, response testResponse) map[string]any {
 		t.Fatalf("sem structuredContent: %s", response.Result)
 	}
 	return result.StructuredContent
+}
+
+func TestWriteTools(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	server.allowWrite = true
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"pause","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"clean_preview","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"resume","arguments":{"run_id":"run-1"}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"clean_apply","arguments":{}}}`,
+	}, "\n") + "\n"
+	responses := serve(t, server, input)
+	if len(responses) != 5 {
+		t.Fatalf("respostas = %d", len(responses))
+	}
+	var listed struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(responses[0].Result, &listed); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tool := range listed.Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel"} {
+		if !names[want] {
+			t.Fatalf("tool %q ausente", want)
+		}
+	}
+	paused := toolStructured(t, responses[1])
+	if paused["scope"] != "global" {
+		t.Fatalf("pause = %+v", paused)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.DataDir(), "PAUSE")); err != nil {
+		t.Fatalf("marker global ausente: %v", err)
+	}
+	toolStructured(t, responses[2])
+	if responses[3].Error != nil {
+		t.Fatalf("resume deveria retornar erro de ferramenta, não protocolo: %+v", responses[3].Error)
+	}
+	var resumeResult struct {
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(responses[3].Result, &resumeResult); err != nil {
+		t.Fatal(err)
+	}
+	if !resumeResult.IsError {
+		t.Fatal("resume sem daemon deveria falhar")
+	}
+	if responses[4].Error == nil || responses[4].Error.Code != -32602 {
+		t.Fatalf("clean_apply sem confirm deveria falhar: %+v", responses[4])
+	}
 }

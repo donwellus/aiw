@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/control"
 	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
@@ -51,7 +52,7 @@ func newResumeCommand(opts *rootOptions) *cobra.Command {
 					return err
 				}
 				fmt.Fprintln(out, "pausa global removida")
-				candidates := resumeCandidates(store)
+				candidates := control.ResumeCandidates(store)
 				if len(candidates) == 0 {
 					fmt.Fprintln(out, "nenhuma run pausada/cancelada para retomar")
 					return nil
@@ -134,23 +135,4 @@ func newResumeCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().Float64Var(&budget, "budget", 0, "orçamento máximo em USD")
 	cmd.Flags().BoolVar(&all, "all", false, "limpa a pausa global e retoma runs paused/canceled")
 	return cmd
-}
-
-func resumeCandidates(store *state.Store) []string {
-	seen := map[string]bool{}
-	var runs []string
-	for _, record := range state.LatestByID(store.All()) {
-		if record.RunID == "" {
-			continue
-		}
-		if record.Status != "paused" && record.Status != "todo" {
-			continue
-		}
-		if seen[record.RunID] {
-			continue
-		}
-		seen[record.RunID] = true
-		runs = append(runs, record.RunID)
-	}
-	return runs
 }

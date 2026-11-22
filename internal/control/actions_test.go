@@ -1,4 +1,4 @@
-package cli
+package control
 
 import (
 	"reflect"
@@ -25,7 +25,7 @@ func TestResumeCandidates(t *testing.T) {
 	put("e", "needs_input", "run-e")
 	put("f", "todo", "run-a")
 
-	got := resumeCandidates(store)
+	got := ResumeCandidates(store)
 	want := []string{"run-a", "run-b"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidatos = %v, esperado %v", got, want)
@@ -43,7 +43,7 @@ func TestResumeCandidatesUsesLatestStatus(t *testing.T) {
 	if err := store.Put(state.TaskRecord{Source: "folder", ID: "a", Status: "running", RunID: "run-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := resumeCandidates(store); len(got) != 0 {
+	if got := ResumeCandidates(store); len(got) != 0 {
 		t.Fatalf("candidatos = %v, esperado vazio", got)
 	}
 }

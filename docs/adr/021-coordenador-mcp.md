@@ -1,6 +1,6 @@
 # ADR 021 — Coordenador via OpenCode + MCP read-only
 
-- Status: aceito
+- Status: aceito; fase de controle ampliada pelo ADR-022
 - Data: 2026-11-22
 
 ## Contexto

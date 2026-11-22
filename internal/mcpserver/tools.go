@@ -10,18 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/donwellus/aiw/internal/clean"
+	"github.com/donwellus/aiw/internal/control"
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/report"
 )
 
-func toolDefinitions() []map[string]any {
+func toolDefinitions(allowWrite bool) []map[string]any {
 	readOnly := map[string]any{
 		"readOnlyHint":    true,
 		"destructiveHint": false,
 		"idempotentHint":  true,
 		"openWorldHint":   false,
 	}
-	return []map[string]any{
+	tools := []map[string]any{
 		{
 			"name":        "status",
 			"title":       "Status do aiw",
@@ -68,7 +71,116 @@ func toolDefinitions() []map[string]any {
 			}),
 			"annotations": readOnly,
 		},
+		{
+			"name":        "daemon_status",
+			"title":       "Status do daemon",
+			"description": "Mostra se o daemon está ativo e seu heartbeat.",
+			"inputSchema": objectSchema(map[string]any{}),
+			"annotations": readOnly,
+		},
+		{
+			"name":        "operations",
+			"title":       "Listar operações",
+			"description": "Lista operações assíncronas de controle, mais recentes primeiro.",
+			"inputSchema": objectSchema(map[string]any{
+				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+			}),
+			"annotations": readOnly,
+		},
+		{
+			"name":        "operation_show",
+			"title":       "Detalhar operação",
+			"description": "Mostra o estado e o resultado de uma operação assíncrona.",
+			"inputSchema": objectSchema(map[string]any{
+				"operation_id": map[string]any{"type": "string", "description": "ID retornado por resume"},
+			}, "operation_id"),
+			"annotations": readOnly,
+		},
+		{
+			"name":        "clean_preview",
+			"title":       "Prévia de limpeza",
+			"description": "Mostra o que o aiw clean removeria, sem alterar nada.",
+			"inputSchema": cleanSchema(false),
+			"annotations": readOnly,
+		},
 	}
+	if !allowWrite {
+		return tools
+	}
+	return append(tools,
+		map[string]any{
+			"name":        "pause",
+			"title":       "Pausar",
+			"description": "Pausa uma run ou todo o projeto (sem run_id).",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string", "description": "Opcional: pausa só esta run"},
+				"reason": map[string]any{"type": "string", "description": "Motivo da pausa"},
+			}),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true},
+		},
+		map[string]any{
+			"name":        "resume",
+			"title":       "Retomar",
+			"description": "Enfileira resume de uma run ou de todas as paused/canceled. Requer daemon ativo.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":     map[string]any{"type": "string", "description": "Run específica"},
+				"all":        map[string]any{"type": "boolean", "description": "Retoma todas as paused/canceled"},
+				"auto":       map[string]any{"type": "boolean", "description": "Aprova gates automaticamente"},
+				"budget_usd": map[string]any{"type": "number", "minimum": 0, "description": "Orçamento da execução"},
+			}),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
+		},
+		map[string]any{
+			"name":        "approve",
+			"title":       "Aprovar gate",
+			"description": "Aprova um gate intake, spec ou plan.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string"},
+				"gate":   map[string]any{"type": "string", "enum": []string{"intake", "spec", "plan"}},
+			}, "run_id", "gate"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true},
+		},
+		map[string]any{
+			"name":        "release",
+			"title":       "Liberar run",
+			"description": "Libera claim e estado de uma run morta. Pede confirmação no OpenCode.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string"},
+			}, "run_id"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
+		},
+		map[string]any{
+			"name":        "clean_apply",
+			"title":       "Aplicar limpeza",
+			"description": "Remove worktrees/branches elegíveis. Exige confirm=true e confirmação no OpenCode.",
+			"inputSchema": cleanSchema(true),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
+		},
+		map[string]any{
+			"name":        "operation_cancel",
+			"title":       "Cancelar operação",
+			"description": "Cancela uma operação assíncrona pendente ou em execução.",
+			"inputSchema": objectSchema(map[string]any{
+				"operation_id": map[string]any{"type": "string"},
+			}, "operation_id"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
+		},
+	)
+}
+
+func cleanSchema(apply bool) map[string]any {
+	properties := map[string]any{
+		"force":           map[string]any{"type": "boolean", "description": "Remove worktrees sujos e branches não merged"},
+		"keep_branches":   map[string]any{"type": "boolean", "description": "Preserva branches"},
+		"skip_superseded": map[string]any{"type": "boolean", "description": "Não limpa runs superadas"},
+		"status":          map[string]any{"type": "string", "description": "Status terminais separados por vírgula"},
+	}
+	required := []string{}
+	if apply {
+		properties["confirm"] = map[string]any{"type": "boolean", "description": "Confirma a remoção real"}
+		required = append(required, "confirm")
+	}
+	return objectSchema(properties, required...)
 }
 
 func objectSchema(properties map[string]any, required ...string) map[string]any {
@@ -90,6 +202,9 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, invalidParams(err)
 	}
+	if !s.allowWrite && writeTool(params.Name) {
+		return nil, &rpcError{Code: -32602, Message: "escrita desabilitada; use aiw mcp --allow-write", Data: params.Name}
+	}
 	switch params.Name {
 	case "status":
 		return s.toolStatus(ctx)
@@ -101,9 +216,285 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolRunShow(ctx, params.Arguments)
 	case "events":
 		return s.toolEvents(ctx, params.Arguments)
+	case "daemon_status":
+		return s.toolDaemonStatus()
+	case "operations":
+		return s.toolOperations(params.Arguments)
+	case "operation_show":
+		return s.toolOperationShow(params.Arguments)
+	case "clean_preview":
+		return s.toolClean(ctx, params.Arguments, false)
+	case "pause":
+		return s.toolPause(params.Arguments)
+	case "resume":
+		return s.toolResume(params.Arguments)
+	case "approve":
+		return s.toolApprove(params.Arguments)
+	case "release":
+		return s.toolRelease(ctx, params.Arguments)
+	case "clean_apply":
+		return s.toolClean(ctx, params.Arguments, true)
+	case "operation_cancel":
+		return s.toolOperationCancel(params.Arguments)
 	default:
 		return nil, &rpcError{Code: -32602, Message: "unknown tool", Data: params.Name}
 	}
+}
+
+func writeTool(name string) bool {
+	switch name {
+	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) toolDaemonStatus() (any, *rpcError) {
+	info, active := control.DaemonActive(s.cfg, 15*time.Second)
+	value := map[string]any{"active": active}
+	if info.PID != 0 {
+		value["daemon"] = info
+	}
+	result, err := toolResult(value)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return result, nil
+}
+
+func (s *Server) toolOperations(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Limit int `json:"limit"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	limit := args.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	store, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	all, err := store.List(0)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	total := len(all)
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	result, err := toolResult(map[string]any{"total": total, "operations": all})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return result, nil
+}
+
+func (s *Server) toolOperationShow(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		OperationID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	store, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	operation, err := store.Get(args.OperationID)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	result, err := toolResult(operation)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return result, nil
+}
+
+func (s *Server) toolPause(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID  string `json:"run_id"`
+		Reason string `json:"reason"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	if args.RunID != "" {
+		if err := control.ValidateRunID(args.RunID); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	result, err := control.Pause(s.cfg, args.RunID, args.Reason)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolResume(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID     string  `json:"run_id"`
+		All       bool    `json:"all"`
+		Auto      bool    `json:"auto"`
+		BudgetUSD float64 `json:"budget_usd"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	if args.All == (args.RunID != "") {
+		return nil, invalidParams(errors.New("use run_id ou all=true, não ambos"))
+	}
+	if args.RunID != "" {
+		if err := control.ValidateRunID(args.RunID); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	if !args.All && pause.Active(s.cfg.DataDir()) {
+		return toolError("pausa global ativa; use resume com all=true"), nil
+	}
+	info, active := control.DaemonActive(s.cfg, 15*time.Second)
+	if !active {
+		return toolError("daemon não está ativo; inicie aiw daemon para processar operações assíncronas"), nil
+	}
+	store, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	action := control.ActionResume
+	if args.All {
+		action = control.ActionResumeAll
+	}
+	operation, err := store.Enqueue(action, args.RunID, map[string]any{
+		"auto":       args.Auto,
+		"budget_usd": args.BudgetUSD,
+	})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(map[string]any{"operation": operation, "daemon": info})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolApprove(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+		Gate  string `json:"gate"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	run, err := control.Approve(s.cfg, args.RunID, args.Gate)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(map[string]any{"run_id": run.ID, "gate": args.Gate, "gates": run.Gates})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolRelease(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := control.Release(ctx, s.cfg, s.store, args.RunID)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolClean(ctx context.Context, raw json.RawMessage, apply bool) (any, *rpcError) {
+	var args struct {
+		Force          bool   `json:"force"`
+		KeepBranches   bool   `json:"keep_branches"`
+		SkipSuperseded bool   `json:"skip_superseded"`
+		Status         string `json:"status"`
+		Confirm        bool   `json:"confirm"`
+	}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return nil, invalidParams(err)
+		}
+	}
+	if apply && !args.Confirm {
+		return nil, invalidParams(errors.New("confirm=true obrigatório para clean_apply"))
+	}
+	statuses, err := clean.ParseStatuses(args.Status)
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := clean.Run(ctx, s.cfg, s.store, clean.Options{
+		Statuses:       statuses,
+		DryRun:         !apply,
+		Force:          args.Force,
+		KeepBranches:   args.KeepBranches,
+		SkipSuperseded: args.SkipSuperseded,
+	})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolOperationCancel(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		OperationID string `json:"operation_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	store, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	operation, err := store.Cancel(args.OperationID)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(operation)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
 }
 
 func (s *Server) toolStatus(ctx context.Context) (any, *rpcError) {

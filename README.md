@@ -151,7 +151,7 @@ aiw resume <run-id>
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
 | `aiw clean [--dry-run] [--force] [--keep-branches] [--skip-superseded] [--json]` | remove worktrees e branches de runs terminais/superadas |
-| `aiw mcp` | servidor MCP stdio read-only para o coordenador |
+| `aiw mcp [--allow-write]` | servidor MCP stdio para o coordenador |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 | `aiw resume --all` | remove a pausa global e retoma runs paused/canceladas |
@@ -219,23 +219,27 @@ aiw clean --skip-superseded              # mantém runs antigas needs_input/paus
 
 ### Coordenador via OpenCode + MCP
 
-O aiw expõe um control plane read-only para um agente coordenador persistente:
+O aiw expõe um control plane MCP para um agente coordenador persistente:
 
 ```bash
-aiw daemon --workers 2 --interval 60s   # workers em outro processo
-aiw mcp                                 # servidor MCP stdio (usado pelo OpenCode)
+aiw daemon --workers 2 --interval 60s   # workers + executor de operações
+aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
 ```
 
-- O coordenador recomendado é um agente primário do OpenCode com permissões
-  negando `edit`, `shell` e `subagent`.
-- Ele conversa com você e consulta `aiw_status`, `aiw_report`, `aiw_runs`,
-  `aiw_run_show` e `aiw_events`.
-- Workers continuam sendo runs do pipeline, executadas pelo daemon em worktrees
-  isolados; o coordenador nunca trabalha nas tarefas.
+- O coordenador recomendado é um agente primário do OpenCode negando `edit`,
+  `shell` e `subagent`.
+- Leitura: `aiw_status`, `aiw_report`, `aiw_runs`, `aiw_run_show`, `aiw_events`,
+  `aiw_daemon_status`, `aiw_operations`, `aiw_clean_preview`.
+- Controle: pause, resume assíncrono, approve, release e clean. `release` e
+  `clean_apply` pedem confirmação; `clean_apply` também exige `confirm=true`.
+- `resume` retorna um `operation_id`; o daemon executa em background para o
+  coordenador continuar disponível.
+- Workers continuam sendo runs do pipeline em worktrees isolados; o coordenador
+  nunca trabalha nas tarefas.
 - Setup e exemplo de agente: [docs/coordinator.md](docs/coordinator.md) e
   [examples/opencode](examples/opencode).
-- Fase atual: somente leitura. Controle (`pause`, `resume`, `approve`, `clean`,
-  `cancel`) e notificações proativas ficam para as próximas fases.
+- Ainda não expostos: cancelar run em andamento, needs_input inline, prioridade
+  e notificações proativas.
 
 ### Paralelismo (`aiw work`)
 
@@ -708,5 +712,5 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.
 - Worktrees/branches não são removidos automaticamente após a entrega; use `aiw clean` (branches remotas/PRs não são apagadas).
-- O coordenador via MCP é read-only; ações de execução/controle pelo agente ainda não estão expostas.
-- O coordenador requer um processo OpenCode/servidor e um daemon vivos; sem daemon ele só lê o estado.
+- O coordenador requer OpenCode; o `resume` assíncrono exige daemon ativo. Sem daemon, ele ainda consulta estado e executa ações síncronas.
+- Cancelar run em andamento, responder needs_input e notificações proativas ainda não estão expostos ao coordenador.

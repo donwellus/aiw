@@ -4,7 +4,7 @@
     "servers": {
       "aiw": {
         "type": "local",
-        "command": ["aiw", "mcp"],
+        "command": ["aiw", "mcp", "--allow-write"],
         "cwd": "."
       }
     }

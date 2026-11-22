@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/control"
 	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
@@ -196,6 +198,59 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				fmt.Fprintf(logOut, "[daemon] status em http://%s/status\n", addr)
 			}
 			fmt.Fprintf(logOut, "[daemon] iniciado source=%s workers=%d interval=%s\n", src.Name(), workers, interval)
+
+			ops, err := control.OpenOperationStore(cfg)
+			if err != nil {
+				return err
+			}
+			executor := control.NewExecutor(cfg, store, ops, run, slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: slog.LevelInfo})))
+			execCtx, cancelExec := context.WithCancel(ctx)
+			var execWG sync.WaitGroup
+			execWG.Add(1)
+			go func() {
+				defer execWG.Done()
+				executor.Run(execCtx)
+			}()
+			defer func() {
+				cancelExec()
+				execWG.Wait()
+			}()
+
+			daemonInfo := control.DaemonInfo{
+				PID:        os.Getpid(),
+				StartedAt:  time.Now().UTC(),
+				Workers:    workers,
+				Interval:   interval.String(),
+				Source:     src.Name(),
+				StatusAddr: statusAddr,
+				Version:    versionString(),
+			}
+			if err := control.WriteDaemonInfo(cfg, daemonInfo); err != nil {
+				return err
+			}
+			heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
+			var heartbeatWG sync.WaitGroup
+			heartbeatWG.Add(1)
+			go func() {
+				defer heartbeatWG.Done()
+				ticker := time.NewTicker(time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-heartbeatCtx.Done():
+						return
+					case <-ticker.C:
+						if err := control.WriteDaemonInfo(cfg, daemonInfo); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "[daemon] aviso: heartbeat: %v\n", err)
+						}
+					}
+				}
+			}()
+			defer func() {
+				cancelHeartbeat()
+				heartbeatWG.Wait()
+				control.RemoveDaemonInfo(cfg, os.Getpid())
+			}()
 
 			out := cmd.OutOrStdout()
 			warned := map[string]bool{}

@@ -22,16 +22,17 @@ var supportedVersions = map[string]bool{
 }
 
 type Server struct {
-	cfg     *config.Config
-	store   *state.Store
-	version string
-	in      io.Reader
-	out     io.Writer
-	ready   bool
+	cfg        *config.Config
+	store      *state.Store
+	version    string
+	allowWrite bool
+	in         io.Reader
+	out        io.Writer
+	ready      bool
 }
 
-func New(cfg *config.Config, store *state.Store, version string, in io.Reader, out io.Writer) *Server {
-	return &Server{cfg: cfg, store: store, version: version, in: in, out: out}
+func New(cfg *config.Config, store *state.Store, version string, allowWrite bool, in io.Reader, out io.Writer) *Server {
+	return &Server{cfg: cfg, store: store, version: version, allowWrite: allowWrite, in: in, out: out}
 }
 
 type request struct {
@@ -112,7 +113,7 @@ func (s *Server) handle(ctx context.Context, req request) response {
 	case "ping":
 		resp.Result = map[string]any{}
 	case "tools/list":
-		resp.Result = map[string]any{"tools": toolDefinitions()}
+		resp.Result = map[string]any{"tools": toolDefinitions(s.allowWrite)}
 	case "tools/call":
 		result, err := s.callTool(ctx, req.Params)
 		if err != nil {
@@ -139,6 +140,12 @@ func (s *Server) initialize(raw json.RawMessage) (map[string]any, error) {
 	if !supportedVersions[version] {
 		version = protocolVersion
 	}
+	title := "aiw control plane (read-only)"
+	instructions := "Control plane read-only do aiw. Use aiw_status, aiw_report, aiw_runs, aiw_run_show e aiw_events para inspecionar o estado. Não há ferramentas de escrita nesta versão."
+	if s.allowWrite {
+		title = "aiw control plane"
+		instructions = "Control plane do aiw com leitura e controle. Use pause, resume, approve, release, clean e operations. Resume é assíncrono: acompanhe pelo operation_id. Peça confirmação antes de ações destrutivas."
+	}
 	return map[string]any{
 		"protocolVersion": version,
 		"capabilities": map[string]any{
@@ -146,10 +153,10 @@ func (s *Server) initialize(raw json.RawMessage) (map[string]any, error) {
 		},
 		"serverInfo": map[string]any{
 			"name":    "aiw",
-			"title":   "aiw control plane (read-only)",
+			"title":   title,
 			"version": s.version,
 		},
-		"instructions": "Control plane read-only do aiw. Use aiw_status, aiw_report, aiw_runs, aiw_run_show e aiw_events para inspecionar o estado. Não há ferramentas de escrita nesta versão.",
+		"instructions": instructions,
 	}, nil
 }
 

@@ -808,6 +808,161 @@ assert_eq "$BRANCHES" 0 "branches após clean --force"
 assert_eq "$WORKTREES" 1 "somente o worktree principal permanece"
 pass "clean: dry-run, worktrees, branches merged e force"
 
+# 11) Coordenador: MCP write + resume assíncrono processado pelo daemon.
+DIR="$WORK/coordinator"
+new_project "$DIR"
+python3 - "$DIR" <<'PYCONF'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1]) / ".aiw/config.yaml"
+text = path.read_text().replace("    spec: false", "    spec: human")
+path.write_text(text)
+PYCONF
+write_task "$DIR" "coord-a" "Tarefa do coordenador"
+
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 1 --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
+assert_eq "$PAUSED" 1 "run pausada no gate spec"
+RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+for path in (pathlib.Path(sys.argv[1]) / ".aiw/runs").glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "paused":
+        print(data["id"])
+        break
+PYRUN
+)
+[ -n "$RUN_ID" ] || fail "run pausada não encontrada"
+
+"$AIW" --root "$DIR" daemon --workers 1 --interval 100ms >"$DIR/daemon.log" 2>"$DIR/daemon.err" &
+DAEMON_PID=$!
+for i in $(seq 1 100); do
+  [ -f "$DIR/.aiw/daemon.json" ] && break
+  sleep 0.1
+done
+[ -f "$DIR/.aiw/daemon.json" ] || fail "daemon não publicou heartbeat"
+
+cat > "$DIR/mcp-in.jsonl" <<MCPIN
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"approve","arguments":{"run_id":"$RUN_ID","gate":"spec"}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"resume","arguments":{"run_id":"$RUN_ID","auto":true}}}
+MCPIN
+"$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
+OP_ID=$(python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = {str(item["id"]): item for item in map(json.loads, open(sys.argv[1])) if "id" in item}
+assert responses["2"]["result"], responses
+tools = {tool["name"] for tool in responses["2"]["result"]["tools"]}
+for name in ("pause", "resume", "approve", "release", "clean_apply", "operation_cancel"):
+    assert name in tools, name
+approve = responses["3"]["result"]["structuredContent"]
+assert approve["gates"]["spec"] == "approved", approve
+operation = responses["4"]["result"]["structuredContent"]["operation"]
+assert operation["status"] == "queued", operation
+print(operation["id"])
+PYMCP
+)
+[ -n "$OP_ID" ] || fail "resume não retornou operation_id"
+
+STATUS=""
+for i in $(seq 1 100); do
+  STATUS=$(python3 - "$DIR" "$OP_ID" <<'PYOP'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1]) / ".aiw/control/operations" / (sys.argv[2] + ".json")
+if path.exists():
+    print(json.loads(path.read_text()).get("status", ""))
+PYOP
+)
+  [ "$STATUS" = "succeeded" ] && break
+  [ "$STATUS" = "failed" ] || [ "$STATUS" = "canceled" ] && break
+  sleep 0.1
+done
+assert_eq "$STATUS" "succeeded" "operação de resume"
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$DONE" 1 "tarefa concluída via resume assíncrono"
+assert_eq "$CLAIMS" 0 "claims após resume assíncrono"
+kill -INT "$DAEMON_PID"
+set +e
+wait "$DAEMON_PID"
+DAEMON_CODE=$?
+set -e
+assert_eq "$DAEMON_CODE" 0 "daemon encerrado após controle"
+pass "coordenador: MCP write e resume assíncrono no daemon"
+
+# 12) Coordenador: resume all assíncrono.
+DIR="$WORK/coordinator-all"
+new_project "$DIR"
+python3 - "$DIR" <<'PYCONF'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1]) / ".aiw/config.yaml"
+text = path.read_text().replace("    spec: false", "    spec: human")
+path.write_text(text)
+PYCONF
+write_task "$DIR" "coord-all-a" "Tarefa coordenador all A"
+write_task "$DIR" "coord-all-b" "Tarefa coordenador all B"
+
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 1 --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
+assert_eq "$PAUSED" 2 "duas runs pausadas"
+"$AIW" --root "$DIR" daemon --workers 2 --interval 100ms >"$DIR/daemon.log" 2>"$DIR/daemon.err" &
+DAEMON_PID=$!
+for i in $(seq 1 100); do
+  [ -f "$DIR/.aiw/daemon.json" ] && break
+  sleep 0.1
+done
+[ -f "$DIR/.aiw/daemon.json" ] || fail "daemon não publicou heartbeat"
+
+cat > "$DIR/mcp-in.jsonl" <<'MCPIN'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"resume","arguments":{"all":true,"auto":true}}}
+MCPIN
+"$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
+OP_ID=$(python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = {str(item["id"]): item for item in map(json.loads, open(sys.argv[1])) if "id" in item}
+operation = responses["2"]["result"]["structuredContent"]["operation"]
+print(operation["id"])
+PYMCP
+)
+[ -n "$OP_ID" ] || fail "resume all não retornou operation_id"
+STATUS=""
+for i in $(seq 1 100); do
+  STATUS=$(python3 - "$DIR" "$OP_ID" <<'PYOP'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1]) / ".aiw/control/operations" / (sys.argv[2] + ".json")
+if path.exists():
+    print(json.loads(path.read_text()).get("status", ""))
+PYOP
+)
+  [ "$STATUS" = "succeeded" ] || [ "$STATUS" = "failed" ] || [ "$STATUS" = "canceled" ] && break
+  sleep 0.1
+done
+assert_eq "$STATUS" "succeeded" "operação resume all"
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+assert_eq "$DONE" 2 "tarefas concluídas via resume all"
+kill -INT "$DAEMON_PID"
+set +e
+wait "$DAEMON_PID"
+DAEMON_CODE=$?
+set -e
+assert_eq "$DAEMON_CODE" 0 "daemon encerrado após resume all"
+pass "coordenador: resume all assíncrono"
+
 # 10) MCP read-only: handshake, tools/list e status.
 DIR="$WORK/mcp"
 new_project "$DIR"
@@ -832,7 +987,7 @@ assert "1" in by_id, responses
 assert by_id["1"]["result"]["serverInfo"]["name"] == "aiw", by_id["1"]
 tools = {tool["name"] for tool in by_id["2"]["result"]["tools"]}
 assert {"status", "report", "runs", "run_show", "events"} <= tools, tools
-for forbidden in ("pause", "resume", "approve", "release", "clean", "cancel"):
+for forbidden in ("pause", "resume", "approve", "release", "clean", "clean_apply", "cancel"):
     assert forbidden not in tools, tools
 status = by_id["3"]["result"]["structuredContent"]
 assert status["summary"]["tasks"] >= 1, status

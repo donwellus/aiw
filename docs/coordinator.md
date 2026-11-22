@@ -1,35 +1,40 @@
 # Coordenador via OpenCode + MCP
 
-Esta é a fase 1 do coordenador do aiw: **read-only**.
+O coordenador é um agente primário do OpenCode que conversa com o humano e
+opera o aiw por MCP. Ele nunca executa tarefas: workers rodam no daemon em
+worktrees isolados.
 
-A arquitetura separa:
-
-- **Coordenador**: agente primário do OpenCode, sempre disponível para conversa.
-- **Control plane**: `aiw mcp`, servidor MCP local com ferramentas de leitura.
-- **Workers**: runs do pipeline aiw, executadas pelo `aiw daemon` ou `aiw work`.
-
-O coordenador não edita código, não abre worktree e não executa tarefas. Ele
-consulta o estado e responde; quem trabalha são os workers.
+```text
+OpenCode coordinator
+        │ MCP (aiw mcp --allow-write)
+        ▼
+aiw control (pause/approve/release/clean + fila)
+        │ operações persistentes
+        ▼
+aiw daemon (executor assíncrono + workers)
+```
 
 ## Requisitos
 
 - `aiw` no `PATH` (`make install` ou `go install ./cmd/aiw`).
 - OpenCode instalado.
-- Um projeto aiw configurado (`.aiw/config.yaml`).
+- Projeto aiw configurado (`.aiw/config.yaml`).
+- Daemon ativo para `resume`.
 
-## 1. Suba os workers separadamente
+## 1. Suba o daemon
 
 ```bash
 aiw daemon --workers 2 --interval 60s
 ```
 
-Sem daemon, o coordenador ainda consegue ler o estado, mas nenhum worker novo
-vai executar.
+O daemon:
 
-## 2. Configure o MCP do aiw
+- executa workers;
+- publica heartbeat em `.aiw/daemon.json`;
+- processa a fila de controle a cada ~1s, inclusive em pausa global;
+- é obrigatório para `resume` assíncrono.
 
-Copie o exemplo para o projeto (se já existir `opencode.jsonc`, mescle apenas a
-entrada `mcp.servers.aiw`):
+## 2. Configure o MCP
 
 ```bash
 mkdir -p .opencode/agents
@@ -37,7 +42,7 @@ cp /caminho/para/aiw/examples/opencode/opencode.jsonc ./opencode.jsonc
 cp /caminho/para/aiw/examples/opencode/agents/aiw-coordinator.md .opencode/agents/
 ```
 
-O `opencode.jsonc` registra o servidor local:
+O exemplo registra:
 
 ```jsonc
 {
@@ -46,7 +51,7 @@ O `opencode.jsonc` registra o servidor local:
     "servers": {
       "aiw": {
         "type": "local",
-        "command": ["aiw", "mcp"],
+        "command": ["aiw", "mcp", "--allow-write"],
         "cwd": "."
       }
     }
@@ -54,7 +59,8 @@ O `opencode.jsonc` registra o servidor local:
 }
 ```
 
-Ajuste `command` se o binário não estiver no `PATH`.
+Sem `--allow-write`, o servidor continua read-only e as ferramentas de escrita
+não aparecem em `tools/list`.
 
 ## 3. Abra o coordenador
 
@@ -62,33 +68,52 @@ Ajuste `command` se o binário não estiver no `PATH`.
 opencode
 ```
 
-Selecione o agente `aiw-coordinator` e converse normalmente.
-
-Para manter o coordenador disponível em outro terminal:
+Selecione `aiw-coordinator`. Para outro terminal:
 
 ```bash
 opencode serve
 opencode attach <url>
 ```
 
-O MCP inicia sob demanda e não escreve nada em stdout que não seja protocolo
-MCP.
+## Ferramentas
 
-## Ferramentas disponíveis
-
-O cliente OpenCode expõe os nomes prefixados pelo servidor `aiw`:
+Leitura:
 
 | Ferramenta | Função |
 |---|---|
-| `aiw_status` | resumo, tarefas ativas, claims, alertas e pausa global |
+| `aiw_status` | resumo, ativos, claims, alertas e pausa |
 | `aiw_report` | relatório completo ou `summary_only` |
-| `aiw_runs` | runs recentes, filtro por status e limite |
-| `aiw_run_show` | detalhe da run + últimos eventos |
-| `aiw_events` | eventos recentes de uma run ou de todas |
+| `aiw_runs` | runs recentes/filtro |
+| `aiw_run_show` | run + eventos |
+| `aiw_events` | eventos recentes |
+| `aiw_daemon_status` | heartbeat/atividade do daemon |
+| `aiw_operations` | operações assíncronas |
+| `aiw_operation_show` | detalhe/resultado de operação |
+| `aiw_clean_preview` | prévia do clean |
 
-Todas são somente leitura. As ferramentas de controle (`pause`, `resume`,
-`approve`, `release`, `clean`, `cancel`) entram na fase 2, junto com um modelo de
-operações assíncronas para não bloquear a conversa.
+Controle:
+
+| Ferramenta | Comportamento |
+|---|---|
+| `aiw_pause` | pausa global ou por run |
+| `aiw_resume` | enfileira resume; retorna `operation_id` |
+| `aiw_approve` | aprova gate intake/spec/plan |
+| `aiw_release` | libera claim/estado — confirmação no OpenCode |
+| `aiw_clean_apply` | exige `confirm=true` + confirmação no OpenCode |
+| `aiw_operation_cancel` | cancela operação pendente/em execução |
+
+`resume` não bloqueia: o daemon executa e o coordenador acompanha:
+
+```text
+aiw_resume {run_id: "..."}
+→ operation_id: op-...
+
+aiw_operation_show {operation_id: "op-..."}
+→ status: running
+→ ...
+→ status: succeeded
+→ result.status: succeeded
+```
 
 ## Exemplo de conversa
 
@@ -97,34 +122,36 @@ Você: como está o projeto?
 
 Coordenador:
   [aiw_status]
-  Nenhuma tarefa ativa. 49 tarefas succeeded, 82 runs, custo acumulado US$ 2,73.
+  Nenhuma tarefa ativa. 49 succeeded, 82 runs, US$ 2,73.
 
-Você: alguma falhou?
+Você: a run X está pausada no gate spec. Aprova e retoma.
+
+Coordenador:
+  [aiw_approve {run_id: "X", gate: "spec"}]
+  [aiw_resume {run_id: "X", auto: true}]
+  Operação op-... enfileirada.
+
+Você: e o que falhou?
 
 Coordenador:
   [aiw_runs {status: "failed"}]
-  A run X falhou no estágio test; erro Y. Quer que eu detalhe os eventos?
+  ...
 ```
 
 ## Segurança
 
-- O agente nega `edit`, `shell` e `subagent`; só usa `aiw_*` e leitura.
-- O servidor não expõe escrita nesta versão.
+- O agente nega `edit`, `shell` e `subagent`.
+- `release` e `clean_apply` pedem confirmação no OpenCode.
+- `clean_apply` também exige `confirm=true` no MCP.
+- O coordenador não faz merge, push ou deploy.
 - Workers continuam sujeitos a claims, worktrees, gates e permissões do aiw.
-- O coordenador nunca faz merge, push ou deploy.
+- Operações ficam auditáveis em `.aiw/control/operations/`.
 
-## Limitações da fase 1
+## Limitações atuais
 
-- Sem pause/resume/approve/cancel pelo coordenador.
-- Sem ferramenta de listagem direta da fila da fonte; use `aiw list` na CLI.
-- Sem notificações proativas; o coordenador responde quando você fala.
-- Dependências entre tarefas ainda dependem da issue #6.
-- Requer manter `opencode`/`opencode serve` e o daemon vivos.
-
-## Próximas fases
-
-1. Controle assíncrono: pause/resume/approve/release/clean/cancel.
-2. Lista/inspeção de issues e prioridade/hold.
-3. Dependências e blocked (issue #6).
-4. Notificações proativas via desktop/Telegram/Slack.
-5. Interface própria `aiw coordinator` apenas se necessário.
+- Cancelar uma run em andamento ainda não está exposto; use pausa + resume.
+- Responder `needs_input` inline ainda não existe.
+- Sem prioridade/hold por issue e sem dependências (issue #6).
+- Sem notificações proativas.
+- Operações `running` órfãs após crash do daemon exigem recuperação manual.
+- É necessário manter OpenCode e o daemon vivos.
