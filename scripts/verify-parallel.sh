@@ -808,6 +808,40 @@ assert_eq "$BRANCHES" 0 "branches após clean --force"
 assert_eq "$WORKTREES" 1 "somente o worktree principal permanece"
 pass "clean: dry-run, worktrees, branches merged e force"
 
+# 10) MCP read-only: handshake, tools/list e status.
+DIR="$WORK/mcp"
+new_project "$DIR"
+write_task "$DIR" "mcp-a" "Tarefa MCP"
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+
+cat > "$DIR/mcp-in.jsonl" <<'MCPIN'
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"status","arguments":{}}}
+{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"runs","arguments":{"limit":5}}}
+MCPIN
+"$AIW" --root "$DIR" mcp <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
+python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
+by_id = {str(response["id"]): response for response in responses if "id" in response}
+assert "1" in by_id, responses
+assert by_id["1"]["result"]["serverInfo"]["name"] == "aiw", by_id["1"]
+tools = {tool["name"] for tool in by_id["2"]["result"]["tools"]}
+assert {"status", "report", "runs", "run_show", "events"} <= tools, tools
+for forbidden in ("pause", "resume", "approve", "release", "clean", "cancel"):
+    assert forbidden not in tools, tools
+status = by_id["3"]["result"]["structuredContent"]
+assert status["summary"]["tasks"] >= 1, status
+runs = by_id["4"]["result"]["structuredContent"]
+assert runs["total"] >= 1, runs
+PYMCP
+[ -s "$DIR/mcp.err" ] && fail "aiw mcp escreveu em stderr: $(head -1 "$DIR/mcp.err")"
+pass "mcp: handshake, tools read-only e status"
+
 # 7) Release: devolve tarefa pausada em doing para o inbox.
 DIR="$WORK/release"
 new_project "$DIR"
