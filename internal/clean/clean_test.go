@@ -233,3 +233,94 @@ func TestRunSkipsActiveClaimAndDirtyWorktree(t *testing.T) {
 		t.Fatalf("worktree sujo permaneceu após force: %v", err)
 	}
 }
+
+func TestRunCleansSupersededRuns(t *testing.T) {
+	cfg, store := newCleanProject(t)
+	ctx := context.Background()
+	old := addRun(t, cfg, store, "run-old", "task-superseded", "needs_input", runOptions{commit: true})
+	newer := addRun(t, cfg, store, "run-new", "task-superseded", "succeeded", runOptions{commit: true})
+
+	skipped, err := Run(ctx, cfg, store, Options{DryRun: true, SkipSuperseded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped.Summary.Superseded != 0 || len(skipped.Actions) != 1 || skipped.Actions[0].RunID != newer.ID {
+		t.Fatalf("skip-superseded inesperado: %+v", skipped)
+	}
+
+	dry, err := Run(ctx, cfg, store, Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.Summary.Superseded != 1 || len(dry.Actions) != 2 {
+		t.Fatalf("dry-run superseded inesperado: %+v", dry)
+	}
+	found := false
+	for _, action := range dry.Actions {
+		if action.RunID == old.ID {
+			found = true
+			if action.Status != "needs_input" || action.SupersededBy != newer.ID {
+				t.Fatalf("ação antiga inesperada: %+v", action)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("run superada não apareceu no dry-run")
+	}
+	if _, err := os.Stat(old.Worktree); err != nil {
+		t.Fatalf("dry-run removeu worktree antigo: %v", err)
+	}
+
+	result, err := Run(ctx, cfg, store, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary.WorktreesRemoved != 2 || result.Summary.Superseded != 1 {
+		t.Fatalf("clean superseded inesperado: %+v", result.Summary)
+	}
+	if _, err := os.Stat(old.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree antigo permaneceu: %v", err)
+	}
+}
+
+func TestRunKeepsCurrentNeedsInput(t *testing.T) {
+	cfg, store := newCleanProject(t)
+	run := addRun(t, cfg, store, "run-current", "task-current", "needs_input", runOptions{commit: true})
+	result, err := Run(context.Background(), cfg, store, Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Actions) != 0 || result.Summary.Superseded != 0 {
+		t.Fatalf("needs_input atual deveria ficar fora: %+v", result)
+	}
+	if _, err := os.Stat(run.Worktree); err != nil {
+		t.Fatalf("worktree atual sumiu: %v", err)
+	}
+}
+
+func TestSupersededAcrossFolderAliases(t *testing.T) {
+	cfg, store := newCleanProject(t)
+	cfg.DefaultSource = "folder"
+	cfg.Sources = map[string]config.SourceConfig{
+		"folder": {Driver: "folder", Path: "./tasks"},
+		"alias":  {Driver: "folder", Path: "./tasks"},
+	}
+	run := addRun(t, cfg, store, "run-alias", "task-alias", "needs_input", runOptions{commit: true})
+	run.Task.Source = "alias"
+	run.Task.ClaimKey = ""
+	run.Ref.Source = "alias"
+	run.Ref.ClaimKey = ""
+	if err := pipeline.SaveRun(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(state.TaskRecord{Source: "folder", ID: "task-alias", Status: "succeeded", RunID: "run-newer"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), cfg, store, Options{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Actions) != 1 || result.Actions[0].SupersededBy != "run-newer" {
+		t.Fatalf("alias não reconhecido como superseded: %+v", result.Actions)
+	}
+}

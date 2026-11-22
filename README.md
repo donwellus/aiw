@@ -150,7 +150,7 @@ aiw resume <run-id>
 | `aiw runs [--json]` | lista execuções |
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
-| `aiw clean [--dry-run] [--force] [--keep-branches] [--json]` | remove worktrees e branches de runs terminais |
+| `aiw clean [--dry-run] [--force] [--keep-branches] [--skip-superseded] [--json]` | remove worktrees e branches de runs terminais/superadas |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 | `aiw resume --all` | remove a pausa global e retoma runs paused/canceladas |
@@ -202,9 +202,12 @@ aiw clean                                # worktrees terminais + branches merged
 aiw clean --keep-branches                # remove só worktrees
 aiw clean --force                        # inclui worktrees sujos e branches não merged
 aiw clean --status succeeded --json      # restringe o status e gera JSON
+aiw clean --skip-superseded              # mantém runs antigas needs_input/paused
 ```
 
 - Padrão: runs `succeeded`, `failed` e `canceled`, sem claim ou estado ativo.
+- Também limpa por padrão runs `needs_input`/`paused` **superadas**: existe um estado mais recente da mesma tarefa (`succeeded`/`failed`) apontando para outra run. `--skip-superseded` desativa.
+- A tarefa é identificada pela claim key canônica (aliases folder incluídos); runs `running` e estados ainda ativos ficam de fora.
 - Worktree é removido com `git worktree remove`; se estiver sujo, é preservado até `--force`.
 - Branch local `aiw/<run-id>` só é apagada se estiver merged na branch padrão; `--force` usa `-D`.
 - Nunca remove `.aiw/runs`: custo/histórico do `report` permanece.

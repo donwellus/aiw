@@ -14,6 +14,7 @@ import (
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/state"
+	"github.com/donwellus/aiw/internal/taskkey"
 	"github.com/donwellus/aiw/internal/worktree"
 )
 
@@ -31,11 +32,22 @@ var activeStatuses = map[string]bool{
 	"needs_input": true,
 }
 
+var supersedableStatuses = map[string]bool{
+	"needs_input": true,
+	"paused":      true,
+}
+
+var supersedingStatuses = map[string]bool{
+	"succeeded": true,
+	"failed":    true,
+}
+
 type Options struct {
-	Statuses     []string
-	DryRun       bool
-	Force        bool
-	KeepBranches bool
+	Statuses       []string
+	DryRun         bool
+	Force          bool
+	KeepBranches   bool
+	SkipSuperseded bool
 }
 
 type Action struct {
@@ -44,6 +56,7 @@ type Action struct {
 	Repo           string `json:"repo,omitempty"`
 	Worktree       string `json:"worktree,omitempty"`
 	Branch         string `json:"branch,omitempty"`
+	SupersededBy   string `json:"superseded_by,omitempty"`
 	WorktreeAction string `json:"worktree_action"`
 	BranchAction   string `json:"branch_action"`
 	Reason         string `json:"reason,omitempty"`
@@ -56,6 +69,7 @@ type Summary struct {
 	BranchesDeleted  int `json:"branches_deleted"`
 	WorktreesSkipped int `json:"worktrees_skipped"`
 	BranchesSkipped  int `json:"branches_skipped"`
+	Superseded       int `json:"superseded"`
 	Errors           int `json:"errors"`
 }
 
@@ -116,13 +130,23 @@ func Run(ctx context.Context, cfg *config.Config, store *state.Store, opts Optio
 	})
 
 	result := &Result{DryRun: opts.DryRun, Actions: []Action{}}
+	keys := taskkey.New(cfg)
+	records := latestRecords(store.All(), keys)
 	bases := map[string]string{}
 	prune := map[string]bool{}
 	for _, run := range runs {
-		if !selected[run.Status] {
-			continue
+		byStatus := selected[run.Status]
+		supersededByRun := ""
+		if !byStatus {
+			if opts.SkipSuperseded || !supersedableStatuses[run.Status] {
+				continue
+			}
+			supersededByRun = supersededBy(run, records, keys)
+			if supersededByRun == "" {
+				continue
+			}
 		}
-		action := processRun(ctx, cfg, store, run, opts, bases, prune)
+		action := processRun(ctx, cfg, store, run, opts, keys, bases, prune, byStatus, supersededByRun)
 		result.Summary.Runs++
 		switch action.WorktreeAction {
 		case "remove":
@@ -135,6 +159,9 @@ func Run(ctx context.Context, cfg *config.Config, store *state.Store, opts Optio
 			result.Summary.BranchesDeleted++
 		case "skip":
 			result.Summary.BranchesSkipped++
+		}
+		if action.SupersededBy != "" {
+			result.Summary.Superseded++
 		}
 		if action.Error != "" {
 			result.Summary.Errors++
@@ -157,13 +184,14 @@ func Run(ctx context.Context, cfg *config.Config, store *state.Store, opts Optio
 	return result, nil
 }
 
-func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run *pipeline.RunState, opts Options, bases map[string]string, prune map[string]bool) (action Action) {
+func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run *pipeline.RunState, opts Options, keys *taskkey.Keyer, bases map[string]string, prune map[string]bool, byStatus bool, supersededByRun string) (action Action) {
 	action = Action{
-		RunID:    run.ID,
-		Status:   run.Status,
-		Repo:     run.Repo,
-		Worktree: run.Worktree,
-		Branch:   run.Branch,
+		RunID:        run.ID,
+		Status:       run.Status,
+		Repo:         run.Repo,
+		Worktree:     run.Worktree,
+		Branch:       run.Branch,
+		SupersededBy: supersededByRun,
 	}
 	skip := func(reason string) Action {
 		action.WorktreeAction = "skip"
@@ -183,6 +211,11 @@ func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run
 	}
 	if strings.TrimSpace(run.Task.Source) == "" || strings.TrimSpace(run.Task.ExternalID) == "" {
 		return skip("run sem identidade de tarefa")
+	}
+	if latest, found := latestRecords(store.All(), keys)[runKey(run, keys)]; found {
+		if latest.RunID != run.ID && activeStatuses[latest.Status] {
+			return skip("tarefa com estado ativo: " + latest.Status)
+		}
 	}
 
 	var claim *state.Claim
@@ -212,11 +245,34 @@ func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run
 		action.Repo = run.Repo
 		action.Worktree = run.Worktree
 		action.Branch = run.Branch
-		if !terminalStatuses[run.Status] {
-			return skip("status mudou para " + run.Status)
+		records := latestRecords(store.All(), keys)
+		latest, hasLatest := records[runKey(run, keys)]
+		if hasLatest && latest.RunID != run.ID && activeStatuses[latest.Status] {
+			return skip("tarefa com estado ativo: " + latest.Status)
 		}
 		if record, found := store.FindByRunID(run.ID); found && activeStatuses[record.Status] {
 			return skip("tarefa com estado ativo: " + record.Status)
+		}
+		if byStatus {
+			if !terminalStatuses[run.Status] {
+				return skip("status mudou para " + run.Status)
+			}
+			action.SupersededBy = ""
+		} else {
+			if terminalStatuses[run.Status] {
+				action.SupersededBy = ""
+			} else if supersedableStatuses[run.Status] {
+				if hasLatest {
+					action.SupersededBy = supersededByRecord(run, latest)
+				} else {
+					action.SupersededBy = ""
+				}
+				if action.SupersededBy == "" {
+					return skip("run não está mais superada")
+				}
+			} else {
+				return skip("status mudou para " + run.Status)
+			}
 		}
 	}
 
@@ -305,6 +361,51 @@ func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run
 	}
 	action.BranchAction = "delete"
 	return action
+}
+
+func latestRecords(records []state.TaskRecord, keys *taskkey.Keyer) map[string]state.TaskRecord {
+	latest := make(map[string]state.TaskRecord, len(records))
+	for _, record := range records {
+		key := keys.Key(record.Source, record.ID, record.Key)
+		current, ok := latest[key]
+		if !ok || record.UpdatedAt.After(current.UpdatedAt) {
+			latest[key] = record
+		}
+	}
+	return latest
+}
+
+func runKey(run *pipeline.RunState, keys *taskkey.Keyer) string {
+	sourceName := run.Task.Source
+	if strings.TrimSpace(sourceName) == "" {
+		sourceName = run.Source
+	}
+	claimKey := run.Task.ClaimKey
+	if claimKey == "" {
+		claimKey = run.Ref.ClaimKey
+	}
+	return keys.Key(sourceName, run.Task.ExternalID, claimKey)
+}
+
+func supersededBy(run *pipeline.RunState, records map[string]state.TaskRecord, keys *taskkey.Keyer) string {
+	record, found := records[runKey(run, keys)]
+	if !found {
+		return ""
+	}
+	return supersededByRecord(run, record)
+}
+
+func supersededByRecord(run *pipeline.RunState, record state.TaskRecord) string {
+	if !supersedingStatuses[record.Status] {
+		return ""
+	}
+	if record.RunID == "" || record.RunID == run.ID {
+		return ""
+	}
+	if record.UpdatedAt.Before(run.CreatedAt) {
+		return ""
+	}
+	return record.RunID
 }
 
 func loadRuns(cfg *config.Config) ([]*pipeline.RunState, error) {

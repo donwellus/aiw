@@ -391,6 +391,59 @@ assert_eq "$DONE" 1 "tarefa em done após editar"
 assert_eq "$CLAIMS" 0 "claims após reprocessamento"
 pass "intake: needs_input, perguntas e reprocessamento após edição"
 
+OLD_RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+for path in (pathlib.Path(sys.argv[1]) / ".aiw/runs").glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "needs_input":
+        print(data["id"])
+        break
+PYRUN
+)
+NEW_RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+for path in (pathlib.Path(sys.argv[1]) / ".aiw/runs").glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "succeeded":
+        print(data["id"])
+        break
+PYRUN
+)
+[ -n "$OLD_RUN_ID" ] || fail "run needs_input antiga não encontrada"
+[ -n "$NEW_RUN_ID" ] || fail "run succeeded nova não encontrada"
+
+"$AIW" --root "$DIR" clean --dry-run --json >"$DIR/clean-superseded.json"
+python3 - "$DIR/clean-superseded.json" "$OLD_RUN_ID" "$NEW_RUN_ID" <<'PYCLEAN'
+import json
+import sys
+result = json.load(open(sys.argv[1]))
+actions = {action["run_id"]: action for action in result["actions"]}
+old = actions.get(sys.argv[2])
+assert old is not None, result
+assert old["status"] == "needs_input", old
+assert old["superseded_by"] == sys.argv[3], old
+assert sys.argv[3] in actions, result
+assert result["summary"]["superseded"] == 1, result["summary"]
+open(sys.argv[1] + ".path", "w").write(old["worktree"])
+PYCLEAN
+OLD_WORKTREE=$(cat "$DIR/clean-superseded.json.path")
+[ -d "$OLD_WORKTREE" ] || fail "worktree antigo não existe antes do clean"
+
+"$AIW" --root "$DIR" clean --json >"$DIR/clean-superseded-run.json"
+python3 - "$DIR/clean-superseded-run.json" <<'PYCLEAN'
+import json
+import sys
+result = json.load(open(sys.argv[1]))
+assert result["summary"]["errors"] == 0, result
+assert result["summary"]["worktrees_removed"] >= 1, result
+PYCLEAN
+[ ! -d "$OLD_WORKTREE" ] || fail "worktree superado não foi removido"
+pass "clean: run needs_input superada por succeeded"
+
 # 5) Pause/resume: pausa no boundary e retoma.
 DIR="$WORK/pause"
 new_project "$DIR"

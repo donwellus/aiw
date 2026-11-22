@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +13,7 @@ import (
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/state"
+	"github.com/donwellus/aiw/internal/taskkey"
 )
 
 type SourceTask struct {
@@ -120,7 +120,7 @@ func (s Summary) OrderedStatuses() []StatusCount {
 
 func Build(cfg *config.Config, store *state.Store, opts Options) (*Report, error) {
 	now := time.Now().UTC()
-	keys := newKeyer(cfg)
+	keys := taskkey.New(cfg)
 	report := &Report{
 		GeneratedAt: now,
 		Root:        cfg.Root,
@@ -143,7 +143,7 @@ func Build(cfg *config.Config, store *state.Store, opts Options) (*Report, error
 		report.Summary.InputTokens += run.Usage.InputTokens
 		report.Summary.OutputTokens += run.Usage.OutputTokens
 		runsByID[run.ID] = run
-		key := keys.key(firstNonEmpty(run.Task.Source, run.Source), run.Task.ExternalID, run.Task.ClaimKey)
+		key := keys.Key(firstNonEmpty(run.Task.Source, run.Source), run.Task.ExternalID, run.Task.ClaimKey)
 		if current, ok := latestByKey[key]; !ok || runTime(run).After(runTime(current)) {
 			latestByKey[key] = run
 		}
@@ -189,7 +189,7 @@ func Build(cfg *config.Config, store *state.Store, opts Options) (*Report, error
 			continue
 		}
 		sourceName := firstNonEmpty(snapshot.Task.Source, opts.Source)
-		key := keys.key(sourceName, snapshot.Task.ExternalID, snapshot.Task.ClaimKey)
+		key := keys.Key(sourceName, snapshot.Task.ExternalID, snapshot.Task.ClaimKey)
 		row, ok := tasks[key]
 		if !ok {
 			row = Task{
@@ -279,49 +279,16 @@ func loadRuns(cfg *config.Config) ([]*pipeline.RunState, error) {
 	return runs, nil
 }
 
-func latestRecords(records []state.TaskRecord, keys keyer) map[string]state.TaskRecord {
+func latestRecords(records []state.TaskRecord, keys *taskkey.Keyer) map[string]state.TaskRecord {
 	latest := make(map[string]state.TaskRecord, len(records))
 	for _, record := range records {
-		key := keys.key(record.Source, record.ID, record.Key)
+		key := keys.Key(record.Source, record.ID, record.Key)
 		current, ok := latest[key]
 		if !ok || record.UpdatedAt.After(current.UpdatedAt) {
 			latest[key] = record
 		}
 	}
 	return latest
-}
-
-type keyer struct {
-	cfg   *config.Config
-	bases map[string]string
-}
-
-func newKeyer(cfg *config.Config) keyer {
-	keyer := keyer{cfg: cfg, bases: map[string]string{}}
-	for name, sourceCfg := range cfg.Sources {
-		if sourceCfg.Driver != "folder" || sourceCfg.Path == "" {
-			continue
-		}
-		base := sourceCfg.Path
-		if !filepath.IsAbs(base) {
-			base = filepath.Join(cfg.Root, base)
-		}
-		keyer.bases[name] = filepath.Clean(base)
-	}
-	return keyer
-}
-
-func (k keyer) key(sourceName, id, claimKey string) string {
-	if claimKey != "" {
-		return claimKey
-	}
-	if sourceName == "" {
-		sourceName = k.cfg.DefaultSource
-	}
-	if base, ok := k.bases[sourceName]; ok {
-		return "folder:" + base + ":" + id
-	}
-	return sourceName + ":" + id
 }
 
 func runTime(run *pipeline.RunState) time.Time {

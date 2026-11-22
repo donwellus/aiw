@@ -18,6 +18,7 @@ func newCleanCommand(opts *rootOptions) *cobra.Command {
 	var dryRun bool
 	var force bool
 	var keepBranches bool
+	var skipSuperseded bool
 	var asJSON bool
 	var statusValue string
 	cmd := &cobra.Command{
@@ -38,10 +39,11 @@ func newCleanCommand(opts *rootOptions) *cobra.Command {
 				return err
 			}
 			result, err := clean.Run(context.Background(), cfg, store, clean.Options{
-				Statuses:     statuses,
-				DryRun:       dryRun,
-				Force:        force,
-				KeepBranches: keepBranches,
+				Statuses:       statuses,
+				DryRun:         dryRun,
+				Force:          force,
+				KeepBranches:   keepBranches,
+				SkipSuperseded: skipSuperseded,
 			})
 			if err != nil {
 				return err
@@ -65,6 +67,7 @@ func newCleanCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "mostra o que seria removido sem alterar nada")
 	cmd.Flags().BoolVar(&force, "force", false, "remove worktrees sujos e branches não merged")
 	cmd.Flags().BoolVar(&keepBranches, "keep-branches", false, "remove apenas worktrees, preservando branches")
+	cmd.Flags().BoolVar(&skipSuperseded, "skip-superseded", false, "não limpa runs needs_input/paused já superadas por uma run terminal mais nova")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "saída JSON")
 	cmd.Flags().StringVar(&statusValue, "status", "succeeded,failed,canceled", "status terminais a limpar (separados por vírgula)")
 	return cmd
@@ -81,15 +84,20 @@ func renderCleanTable(out io.Writer, result *clean.Result) {
 		return
 	}
 	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "RUN\tSTATUS\tWORKTREE\tBRANCH\tDETALHE")
+	fmt.Fprintln(writer, "RUN\tSTATUS\tSUPERADA POR\tWORKTREE\tBRANCH\tDETALHE")
 	for _, action := range result.Actions {
 		detail := strings.TrimSpace(action.Reason)
 		if action.Error != "" {
 			detail = strings.TrimSpace(detail + "; erro: " + action.Error)
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+		supersededBy := action.SupersededBy
+		if supersededBy == "" {
+			supersededBy = "-"
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\n",
 			action.RunID,
 			action.Status,
+			supersededBy,
 			action.WorktreeAction,
 			action.BranchAction,
 			oneLine(detail, 120),
@@ -98,6 +106,7 @@ func renderCleanTable(out io.Writer, result *clean.Result) {
 	writer.Flush()
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "runs selecionadas: %d\n", result.Summary.Runs)
+	fmt.Fprintf(out, "runs superadas: %d\n", result.Summary.Superseded)
 	worktreeLabel := "worktrees removidos"
 	branchLabel := "branches apagadas"
 	if result.DryRun {
