@@ -818,18 +818,18 @@ func (p *Pipeline) reviewLoop(ctx context.Context, run *RunState, trace telemetr
 	if _, err := p.snapshotDiff(run); err != nil {
 		return err
 	}
-	review, err := p.runReview(ctx, run, trace, testLog, budget)
+	review, err := p.runReview(ctx, run, trace, testLog, 0, budget)
 	if err != nil {
 		return err
 	}
 	blocking := parseBlocking(review)
 	rounds := 0
-	for len(blocking) > 0 && rounds < p.Cfg.Defaults.MaxReviewRounds {
+	maxRounds := p.Cfg.Defaults.MaxReviewRounds
+	for len(blocking) > 0 && rounds < maxRounds {
 		rounds++
 		st.Rounds = rounds
 		appendEvent(p.runDir(run), "review.blocking", map[string]any{"round": rounds, "blocking": blocking})
-		feedback := "A revisão encontrou bloqueios. Corrija todos:\n\n" + strings.Join(blocking, "\n")
-		if err := p.implement(ctx, run, trace, feedback, budget); err != nil {
+		if err := p.correct(ctx, run, trace, blocking, rounds, budget); err != nil {
 			return err
 		}
 		ok, log, err := p.runTests(ctx, run, trace)
@@ -837,27 +837,72 @@ func (p *Pipeline) reviewLoop(ctx context.Context, run *RunState, trace telemetr
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("testes falharam após correção dos bloqueios da revisão")
+			message := "testes falharam após a correção da revisão"
+			p.writeWork(run, "review-blockers.md", "# Revisão bloqueada\n\n"+message+"\n\n## Testes\n\n```\n"+truncateForPrompt(log, 20000)+"\n```\n")
+			p.mirror(run)
+			return fmt.Errorf("%w: %s", ErrPaused, message)
 		}
 		if _, err := p.snapshotDiff(run); err != nil {
 			return err
 		}
-		review, err = p.runReview(ctx, run, trace, log, budget)
+		review, err = p.runReview(ctx, run, trace, log, rounds, budget)
 		if err != nil {
 			return err
 		}
 		blocking = parseBlocking(review)
 	}
 	if len(blocking) > 0 {
-		return fmt.Errorf("revisão ainda com %d bloqueio(s) após %d rodada(s): %s", len(blocking), rounds, strings.Join(blocking, "; "))
+		var builder strings.Builder
+		builder.WriteString("# Revisão bloqueada\n\n")
+		for _, item := range blocking {
+			fmt.Fprintf(&builder, "- %s\n", item)
+		}
+		builder.WriteString("\nRevise os blockers, ajuste o código ou use um target de refine se a spec/plano precisarem mudar.\n")
+		p.writeWork(run, "review-blockers.md", builder.String())
+		p.mirror(run)
+		return fmt.Errorf("%w: revisão ainda com %d bloqueio(s) após %d rodada(s)", ErrPaused, len(blocking), rounds)
 	}
 	return nil
 }
 
-func (p *Pipeline) runReview(ctx context.Context, run *RunState, trace telemetry.Trace, testLog string, budget float64) (string, error) {
+func (p *Pipeline) correct(ctx context.Context, run *RunState, trace telemetry.Trace, blocking []string, round int, budget float64) error {
+	data := p.promptData(run)
+	data.Feedback = strings.Join(blocking, "\n")
+	data.ReviewRound = round
+	data.CorrectionPath = p.workArtifact(run, fmt.Sprintf("correction-round-%d.md", round))
+	prompt, err := p.render("correct", data)
+	if err != nil {
+		return err
+	}
+	engineName, model := p.engineFor(run, "correct")
+	res, err := p.callEngineNamed(ctx, run, trace, "correct", "correction", engineName, model, prompt, budget)
+	if err != nil {
+		return err
+	}
+	p.writeWork(run, "correction.output.md", res.Output+"\n")
+	artifactPath := p.workArtifact(run, fmt.Sprintf("correction-round-%d.md", round))
+	if _, statErr := os.Stat(artifactPath); statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+		if strings.TrimSpace(res.Output) == "" {
+			return fmt.Errorf("engine %s não gerou correction-round-%d.md", engineName, round)
+		}
+		p.writeWork(run, fmt.Sprintf("correction-round-%d.md", round), res.Output+"\n")
+	}
+	p.mirror(run)
+	appendEvent(p.runDir(run), "correction.done", map[string]any{"round": round, "blocking": len(blocking)})
+	return nil
+}
+
+func (p *Pipeline) runReview(ctx context.Context, run *RunState, trace telemetry.Trace, testLog string, round int, budget float64) (string, error) {
 	data := p.promptData(run)
 	data.TestLog = truncateForPrompt(testLog, 30000)
 	data.Diff = truncateForPrompt(p.readWork(run, "diff.patch"), 60000)
+	data.ReviewRound = round
+	if round > 0 {
+		data.CorrectionPath = p.workArtifact(run, fmt.Sprintf("correction-round-%d.md", round))
+	}
 	prompt, err := p.render("review", data)
 	if err != nil {
 		return "", err
@@ -878,11 +923,12 @@ func (p *Pipeline) runReview(ctx context.Context, run *RunState, trace telemetry
 		}
 		p.writeWork(run, "review.md", res.Output+"\n")
 	}
-	p.mirror(run)
 	review := p.readWork(run, "review.md")
 	if strings.TrimSpace(review) == "" {
 		return "", errors.New("revisão vazia")
 	}
+	p.writeWork(run, fmt.Sprintf("review-round-%d.md", round), review+"\n")
+	p.mirror(run)
 	return review, nil
 }
 
@@ -928,6 +974,12 @@ func (p *Pipeline) deliver(ctx context.Context, run *RunState, trace telemetry.T
 			span.End(nil, err)
 			return err
 		}
+		if p.autoMerge() {
+			if err := p.awaitAndMergePR(ctx, run); err != nil {
+				span.End(nil, err)
+				return err
+			}
+		}
 	}
 
 	summary := fmt.Sprintf("# Entrega\n\nRun: %s\nBranch: %s\nPR: %s\n\n## Spec\n\n%s\n", run.ID, run.Branch, run.PRURL, truncateForPrompt(p.readWork(run, "spec.md"), 8000))
@@ -935,6 +987,214 @@ func (p *Pipeline) deliver(ctx context.Context, run *RunState, trace telemetry.T
 	p.mirror(run)
 	span.End(map[string]any{"pr_url": run.PRURL, "branch": run.Branch}, nil)
 	return nil
+}
+
+func (p *Pipeline) autoMerge() bool {
+	switch strings.ToLower(strings.TrimSpace(p.Cfg.Delivery.Merge)) {
+	case "auto", "auto_after_approval":
+		return true
+	default:
+		return false
+	}
+}
+
+type prCheck struct {
+	TypeName   string `json:"__typename"`
+	Name       string `json:"name"`
+	Context    string `json:"context"`
+	Status     string `json:"status"`
+	State      string `json:"state"`
+	Conclusion string `json:"conclusion"`
+}
+
+type prStatus struct {
+	State          string    `json:"state"`
+	Mergeable      string    `json:"mergeable"`
+	ReviewDecision string    `json:"reviewDecision"`
+	StatusChecks   []prCheck `json:"statusCheckRollup"`
+}
+
+func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState) error {
+	poll := p.Cfg.Delivery.CIPollInterval.Std()
+	if poll <= 0 {
+		poll = 10 * time.Second
+	}
+	timeout := p.Cfg.Delivery.CITimeout.Std()
+	if timeout <= 0 {
+		timeout = 30 * time.Minute
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		status, err := p.readPRStatus(ctx, run.PRURL)
+		if err != nil {
+			return err
+		}
+		ready, pending, reason := p.evaluatePRStatus(status)
+		if reason != "" {
+			return fmt.Errorf("%w: entrega bloqueada: %s", ErrPaused, reason)
+		}
+		if ready {
+			break
+		}
+		if !pending {
+			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrPaused)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: timeout aguardando CI do PR %s", ErrPaused, run.PRURL)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+
+	concurrency := p.Cfg.Delivery.MergeConcurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	release, err := p.Limiter.Acquire(ctx, "merge:"+filepath.Clean(run.Repo), concurrency)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	status, err := p.readPRStatus(ctx, run.PRURL)
+	if err != nil {
+		return err
+	}
+	ready, pending, reason := p.evaluatePRStatus(status)
+	if reason != "" {
+		return fmt.Errorf("%w: entrega bloqueada: %s", ErrPaused, reason)
+	}
+	if !ready {
+		if pending {
+			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrPaused)
+		}
+		return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrPaused)
+	}
+	method := strings.ToLower(strings.TrimSpace(p.Cfg.Delivery.Method))
+	args := []string{"pr", "merge", run.PRURL}
+	switch method {
+	case "merge":
+		args = append(args, "--merge")
+	case "rebase":
+		args = append(args, "--rebase")
+	default:
+		args = append(args, "--squash")
+	}
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Dir = run.Worktree
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		merged, _ := p.readPRStatus(ctx, run.PRURL)
+		if merged.State != "MERGED" {
+			return fmt.Errorf("%w: merge do PR: %v: %s", ErrPaused, err, strings.TrimSpace(stderr.String()))
+		}
+	}
+	run.PRMerged = true
+	run.MergedAt = time.Now().UTC()
+	p.save(run, p.runDir(run))
+	appendEvent(p.runDir(run), "pr.merged", map[string]any{"pr_url": run.PRURL, "method": method})
+	p.mirror(run)
+	return nil
+}
+
+func (p *Pipeline) readPRStatus(ctx context.Context, prURL string) (prStatus, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "state,mergeable,reviewDecision,statusCheckRollup")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return prStatus{}, fmt.Errorf("consultando PR %s: %w: %s", prURL, err, strings.TrimSpace(stderr.String()))
+	}
+	var status prStatus
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+		return prStatus{}, fmt.Errorf("parseando status do PR: %w", err)
+	}
+	return status, nil
+}
+
+func (p *Pipeline) evaluatePRStatus(status prStatus) (ready bool, pending bool, reason string) {
+	if status.State == "MERGED" {
+		return true, false, ""
+	}
+	if status.State != "" && status.State != "OPEN" {
+		return false, false, "PR está " + status.State
+	}
+	if status.Mergeable == "CONFLICTING" {
+		return false, false, "PR com conflito de merge"
+	}
+	if strings.EqualFold(p.Cfg.Delivery.ExternalReview, "require") && !strings.EqualFold(status.ReviewDecision, "APPROVED") {
+		return false, false, "PR aguardando aprovação externa"
+	}
+	if !p.Cfg.Delivery.RequireCIEnabled() {
+		if status.Mergeable == "MERGEABLE" {
+			return true, false, ""
+		}
+		return false, true, ""
+	}
+	required := p.Cfg.Delivery.RequiredChecks
+	if len(required) == 0 {
+		for _, check := range status.StatusChecks {
+			required = append(required, checkName(check))
+		}
+	}
+	if len(required) == 0 {
+		return false, true, ""
+	}
+	checkPending := false
+	for _, name := range required {
+		found := false
+		for _, check := range status.StatusChecks {
+			if checkName(check) != name {
+				continue
+			}
+			found = true
+			if checkFailed(check) {
+				return false, false, "check " + name + " falhou"
+			}
+			if !checkPassed(check) {
+				checkPending = true
+			}
+		}
+		if !found {
+			checkPending = true
+		}
+	}
+	if checkPending {
+		return false, true, ""
+	}
+	if status.Mergeable == "" || status.Mergeable == "UNKNOWN" {
+		return false, true, ""
+	}
+	if status.Mergeable != "MERGEABLE" {
+		return false, false, "PR não está mergeável: " + status.Mergeable
+	}
+	return true, false, ""
+}
+
+func checkName(check prCheck) string {
+	if check.Name != "" {
+		return check.Name
+	}
+	return check.Context
+}
+
+func checkPassed(check prCheck) bool {
+	if check.TypeName == "StatusContext" {
+		return check.State == "SUCCESS"
+	}
+	return check.Status == "COMPLETED" && check.Conclusion == "SUCCESS"
+}
+
+func checkFailed(check prCheck) bool {
+	if check.TypeName == "StatusContext" {
+		return check.State == "FAILURE" || check.State == "ERROR"
+	}
+	return check.Status == "COMPLETED" && check.Conclusion != "SUCCESS" && check.Conclusion != "SKIPPED"
 }
 
 func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Worktree) error {

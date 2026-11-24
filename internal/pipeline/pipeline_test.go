@@ -422,3 +422,38 @@ func TestIntakeReadyDoesNotBlockOnNonBlockingQuestions(t *testing.T) {
 		t.Fatal("NEEDS_INPUT deveria bloquear")
 	}
 }
+
+func TestEvaluatePRStatus(t *testing.T) {
+	yes := true
+	cfg := &config.Config{Delivery: config.DeliveryConfig{
+		RequireCI:      &yes,
+		RequiredChecks: []string{"verify", "security"},
+		ExternalReview: "ignore",
+	}}
+	p := &Pipeline{Cfg: cfg}
+	status := prStatus{
+		State:     "OPEN",
+		Mergeable: "MERGEABLE",
+		StatusChecks: []prCheck{
+			{Name: "verify", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			{Name: "security", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		},
+	}
+	if ready, pending, reason := p.evaluatePRStatus(status); !ready || pending || reason != "" {
+		t.Fatalf("status pronto inesperado: ready=%v pending=%v reason=%q", ready, pending, reason)
+	}
+	status.StatusChecks[0].Conclusion = ""
+	status.StatusChecks[0].Status = "IN_PROGRESS"
+	if ready, pending, reason := p.evaluatePRStatus(status); ready || !pending || reason != "" {
+		t.Fatalf("status pendente inesperado: ready=%v pending=%v reason=%q", ready, pending, reason)
+	}
+	status.StatusChecks = []prCheck{{Name: "verify", Status: "COMPLETED", Conclusion: "FAILURE"}}
+	if _, _, reason := p.evaluatePRStatus(status); !strings.Contains(reason, "falhou") {
+		t.Fatalf("falha de check não detectada: %q", reason)
+	}
+	status.StatusChecks = nil
+	status.Mergeable = "CONFLICTING"
+	if _, _, reason := p.evaluatePRStatus(status); !strings.Contains(reason, "conflito") {
+		t.Fatalf("conflito não detectado: %q", reason)
+	}
+}

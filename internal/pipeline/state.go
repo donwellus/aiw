@@ -41,6 +41,8 @@ type RunState struct {
 	Usage          engine.Usage      `json:"usage"`
 	Artifacts      map[string]string `json:"artifacts"`
 	PRURL          string            `json:"pr_url,omitempty"`
+	PRMerged       bool              `json:"pr_merged,omitempty"`
+	MergedAt       time.Time         `json:"merged_at,omitempty"`
 	Error          string            `json:"error,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`

@@ -23,6 +23,7 @@ type Data struct {
 	PlanReviewPath string
 	ImplementPath  string
 	ReviewPath     string
+	CorrectionPath string
 	DiffPath       string
 	TestLogPath    string
 	TestLog        string

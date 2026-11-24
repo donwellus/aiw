@@ -119,6 +119,26 @@ func (g *GateMode) UnmarshalYAML(node *yaml.Node) error {
 	return fmt.Errorf("valor de gate inválido")
 }
 
+type DeliveryConfig struct {
+	Merge            string   `yaml:"merge"`
+	Method           string   `yaml:"method"`
+	RequireCI        *bool    `yaml:"require_ci"`
+	RequiredChecks   []string `yaml:"required_checks"`
+	CITimeout        Duration `yaml:"ci_timeout"`
+	CIPollInterval   Duration `yaml:"ci_poll_interval"`
+	MaxFixRounds     int      `yaml:"max_fix_rounds"`
+	MergeConcurrency int      `yaml:"merge_concurrency"`
+	ExternalReview   string   `yaml:"external_review"`
+	ExternalReply    string   `yaml:"external_reply"`
+}
+
+func (d DeliveryConfig) RequireCIEnabled() bool {
+	if d.RequireCI == nil {
+		return true
+	}
+	return *d.RequireCI
+}
+
 type IntakeConfig struct {
 	RiskLabels          []string `yaml:"risk_labels"`
 	MinDescriptionChars int      `yaml:"min_description_chars"`
@@ -256,6 +276,7 @@ type Config struct {
 	DefaultSource string                  `yaml:"default_source"`
 	Workspace     WorkspaceConfig         `yaml:"workspace"`
 	Intake        IntakeConfig            `yaml:"intake"`
+	Delivery      DeliveryConfig          `yaml:"delivery"`
 
 	Path string `yaml:"-"`
 	Root string `yaml:"-"`
@@ -344,6 +365,7 @@ func (c *Config) applyDefaults() {
 	if c.Defaults.MaxReviewRounds == 0 {
 		c.Defaults.MaxReviewRounds = 2
 	}
+
 	if c.Defaults.MaxGateRounds == 0 {
 		c.Defaults.MaxGateRounds = 2
 	}
@@ -402,6 +424,30 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Intake.MinDescriptionChars == 0 {
 		c.Intake.MinDescriptionChars = 10
+	}
+	if c.Delivery.Merge == "" {
+		c.Delivery.Merge = "manual"
+	}
+	if c.Delivery.Method == "" {
+		c.Delivery.Method = "squash"
+	}
+	if c.Delivery.CITimeout == 0 {
+		c.Delivery.CITimeout = Duration(30 * time.Minute)
+	}
+	if c.Delivery.CIPollInterval == 0 {
+		c.Delivery.CIPollInterval = Duration(10 * time.Second)
+	}
+	if c.Delivery.MaxFixRounds == 0 {
+		c.Delivery.MaxFixRounds = 3
+	}
+	if c.Delivery.MergeConcurrency == 0 {
+		c.Delivery.MergeConcurrency = 1
+	}
+	if c.Delivery.ExternalReview == "" {
+		c.Delivery.ExternalReview = "ignore"
+	}
+	if c.Delivery.ExternalReply == "" {
+		c.Delivery.ExternalReply = "auto_unless_conflict"
 	}
 }
 

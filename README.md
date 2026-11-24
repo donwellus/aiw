@@ -251,6 +251,40 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
   [examples/opencode](examples/opencode).
 - Ainda não expostos: prioridade/hold, dependências e notificações proativas.
 
+### Review, correção e merge
+
+O ciclo interno é:
+
+```text
+implement → test → review
+              ↑       │
+              └─ correct (BLOCKING)
+                      │
+                   APROVADO
+                      ↓
+                 push + PR
+                      ↓
+                 CI verde
+                      ↓
+                    merge
+```
+
+- O reviewer lê requisitos/intake, spec, plano, diff e log de testes; **não** lê o resumo do implementador.
+- O corretor é um estágio separado (`correct`), com prompt próprio e configuração de engine independente.
+- O corretor responde a cada blocker com `FIXED`, `DISPUTED` ou `NEEDS_CLARIFICATION`; o reviewer reavalia e só deve aceitar um dispute com evidência.
+- O limite é `max_review_rounds`; ao exceder, a run fica `paused`, não `failed`.
+- Com `delivery.merge: auto_after_approval` e `--pr`, o worker espera os checks configurados e faz `gh pr merge` apenas com CI verde e PR mergeável.
+- CI falhou, conflito ou PR não mergeável → run pausa no estágio `deliver` com motivo; nada é mergeado sem `--admin`.
+- O merge é serializado por repositório (`merge_concurrency`, default 1). O merge usa `Closes #N`; a issue fecha no merge.
+- `external_review` é o hook para projetos em grupo; a implementação de ingestão de reviews externos fica para a fase seguinte.
+
+Limitações desta versão:
+
+- O worker fica ocupado enquanto aguarda CI/merge.
+- Falha de CI pós-PR pausa a run; correção automática pós-CI ainda não está implementada.
+- Conflitos de merge pausam; não há rebase automático nem merge queue avançada.
+- Review externo (`CHANGES_REQUESTED`/threads) ainda não é ingerido; `external_review` apenas prepara a política.
+
 ### Paralelismo (`aiw work`)
 
 ```bash
@@ -408,6 +442,7 @@ stages:
   architect:    {engine: claude}
   implement:    {engine: opencode}
   review:       {engine: opencode}
+  correct:      {engine: opencode}   # corretor do loop de revisão
 
 telemetry:
   provider: langfuse        # noop | langfuse
@@ -425,6 +460,18 @@ sources:
     # doing_dir: ./tasks/doing   # opcional: visibilidade/claim por rename
     done_dir: ./tasks/done
     failed_dir: ./tasks/failed
+
+delivery:
+  merge: auto_after_approval   # manual | auto_after_approval
+  method: squash               # squash | merge | rebase
+  require_ci: true
+  required_checks: [verify, security]
+  ci_timeout: 30m
+  ci_poll_interval: 10s
+  max_fix_rounds: 3
+  merge_concurrency: 1
+  external_review: ignore      # ignore | consume | require (grupo, fase futura)
+  external_reply: auto_unless_conflict
 
 default_source: folder
 
@@ -722,6 +769,8 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - Resposta inline de `needs_input` e refinamento de gates existem via MCP/coordenador; ainda não há comandos CLI dedicados.
+- Review externo de PR (comentários/threads de grupo) ainda não é consumido pelo aiw.
+- Auto-merge valida CI pelo aiw porque o repo de exemplo não tem branch protection; não usa `--admin`.
 - Prioridade/hold, dependências e notificações proativas ainda não estão expostos ao coordenador.
 - Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.
