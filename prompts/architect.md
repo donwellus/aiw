@@ -17,6 +17,10 @@ Regras:
 - Estrutura obrigatória do arquivo: Abordagem, Arquivos afetados, Passos de implementação, Estratégia de testes, Riscos, Decisões.
 - Em Decisões, registre trade-offs relevantes; se houver decisão arquitetural significativa, crie também {{.PlanPath}}.adr.md com contexto, decisão e consequências.
 - O plano deve ser específico o suficiente para outro agente implementar sem adivinhar.
+{{if .HumanFeedback}}
+Refinamento humano para esta etapa (incorpore integralmente):
+{{.HumanFeedback}}
+{{end}}
 {{if .Feedback}}
 Feedback do validador anterior (corrija todos os pontos):
 {{.Feedback}}

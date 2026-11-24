@@ -1092,6 +1092,82 @@ set -e
 assert_eq "$DAEMON_CODE" 0 "daemon encerrado após answer"
 pass "coordenador: questions, answer e rerun"
 
+# 16) Coordenador: refine de gate plan.
+DIR="$WORK/coordinator-refine"
+new_project "$DIR"
+python3 - "$DIR" <<'PYCONF'
+import sys
+from pathlib import Path
+path = Path(sys.argv[1]) / ".aiw/config.yaml"
+text = path.read_text().replace("    plan: false", "    plan: human")
+path.write_text(text)
+PYCONF
+write_task "$DIR" "refine-a" "Tarefa refine"
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 1 --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
+assert_eq "$PAUSED" 1 "run pausada no gate plan"
+RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+for path in (pathlib.Path(sys.argv[1]) / ".aiw/runs").glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "paused":
+        print(data["id"])
+        break
+PYRUN
+)
+[ -n "$RUN_ID" ] || fail "run pausada não encontrada para refine"
+"$AIW" --root "$DIR" daemon --workers 1 --interval 100ms >"$DIR/daemon.log" 2>"$DIR/daemon.err" &
+DAEMON_PID=$!
+for i in $(seq 1 100); do [ -f "$DIR/.aiw/daemon.json" ] && break; sleep 0.1; done
+cat > "$DIR/mcp-in.jsonl" <<MCPIN
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"refine","arguments":{"run_id":"$RUN_ID","target":"plan","feedback":"Ajuste o plano para incluir testes de regressão."}}}
+MCPIN
+"$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
+OP_ID=$(python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = {str(item["id"]): item for item in map(json.loads, open(sys.argv[1])) if "id" in item}
+print(responses["2"]["result"]["structuredContent"]["operation"]["id"])
+PYMCP
+)
+[ -n "$OP_ID" ] || fail "refine não retornou operation_id"
+STATUS=""
+for i in $(seq 1 100); do
+  STATUS=$(python3 - "$DIR" "$OP_ID" <<'PYOP'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1]) / ".aiw/control/operations" / (sys.argv[2] + ".json")
+if path.exists():
+    print(json.loads(path.read_text()).get("status", ""))
+PYOP
+)
+  [ "$STATUS" = "succeeded" ] || [ "$STATUS" = "failed" ] || [ "$STATUS" = "canceled" ] && break
+  sleep 0.1
+done
+assert_eq "$STATUS" "succeeded" "operação de refine"
+[ -f "$DIR/.aiw/runs/$RUN_ID/feedback/plan.md" ] || fail "feedback do plan não foi gravado"
+RUN_STATUS=$(python3 - "$DIR" "$RUN_ID" <<'PYSTATUS'
+import json
+import pathlib
+import sys
+print(json.loads((pathlib.Path(sys.argv[1]) / ".aiw/runs" / sys.argv[2] / "run.json").read_text())["status"])
+PYSTATUS
+)
+assert_eq "$RUN_STATUS" "paused" "refine pausa novamente no gate plan"
+kill -INT "$DAEMON_PID"
+set +e
+wait "$DAEMON_PID"
+DAEMON_CODE=$?
+set -e
+assert_eq "$DAEMON_CODE" 0 "daemon encerrado após refine"
+pass "coordenador: refine target plan"
+
 # 10) MCP read-only: handshake, tools/list e status.
 DIR="$WORK/mcp"
 new_project "$DIR"
@@ -1125,6 +1201,28 @@ assert runs["total"] >= 1, runs
 PYMCP
 [ -s "$DIR/mcp.err" ] && fail "aiw mcp escreveu em stderr: $(head -1 "$DIR/mcp.err")"
 pass "mcp: handshake, tools read-only e status"
+
+# 15) Fila: tarefa aguardando worker aparece como queued.
+DIR="$WORK/queued"
+new_project "$DIR"
+write_task "$DIR" "queued-a" "Tarefa queued A"
+write_task "$DIR" "queued-b" "Tarefa queued B"
+export AIW_SLOW_SECONDS=0.5
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log" &
+WORK_PID=$!
+QUEUED=0
+for i in $(seq 1 100); do
+  QUEUED=$( { grep -l '"status": "queued"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null || true; } | wc -l | tr -d ' ')
+  [ "$QUEUED" = "1" ] && break
+  sleep 0.1
+done
+assert_eq "$QUEUED" 1 "tarefa na fila com estado queued"
+"$AIW" --root "$DIR" status >"$DIR/status.txt" 2>&1
+grep -q "queued" "$DIR/status.txt" || fail "status não mostrou tarefa queued"
+wait "$WORK_PID"
+QUEUED=$( { grep -l '"status": "queued"' "$DIR"/.aiw/state/tasks/*.json 2>/dev/null || true; } | wc -l | tr -d ' ')
+assert_eq "$QUEUED" 0 "sem tarefas queued após processamento"
+pass "fila: estado queued visível no status"
 
 # 7) Release: devolve tarefa pausada em doing para o inbox.
 DIR="$WORK/release"

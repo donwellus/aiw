@@ -178,3 +178,39 @@ func TestWorkDrainFinishesInFlight(t *testing.T) {
 		t.Fatalf("jobs iniciados = %d, esperado 1", got)
 	}
 }
+
+func TestMarkQueued(t *testing.T) {
+	run, store := newTestRunner(t)
+	task := testTask("queued")
+	if err := run.MarkQueued([]Candidate{{Task: task}}); err != nil {
+		t.Fatal(err)
+	}
+	record, found := store.Get("folder", "queued")
+	if !found || record.Status != "queued" || record.RunID != "" {
+		t.Fatalf("record = %+v found=%v", record, found)
+	}
+	if _, skip := run.Check(task, false); skip {
+		t.Fatal("tarefa queued deveria ser elegível")
+	}
+}
+
+func TestMarkQueuedDoesNotOverwriteActiveRun(t *testing.T) {
+	run, store := newTestRunner(t)
+	task := testTask("running")
+	task.ClaimKey = "folder:running"
+	if err := store.Put(state.TaskRecord{Key: task.ClaimKey, Source: "folder", ID: task.ExternalID, Status: "running", RunID: "run-active", ContentHash: task.ContentHash}); err != nil {
+		t.Fatal(err)
+	}
+	claim, acquired, err := store.ClaimByKey(task.ClaimKey, "folder", task.ExternalID, "run-active", time.Hour)
+	if err != nil || !acquired {
+		t.Fatalf("claim: %v %v", acquired, err)
+	}
+	defer func() { _ = claim.Release() }()
+	if err := run.MarkQueued([]Candidate{{Task: task}}); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := store.FindByKey(task.ClaimKey)
+	if record.Status != "running" || record.RunID != "run-active" {
+		t.Fatalf("running foi sobrescrito: %+v", record)
+	}
+}

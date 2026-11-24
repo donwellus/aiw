@@ -281,6 +281,9 @@ func Answer(ctx context.Context, cfg *config.Config, runID, text string) (Answer
 	}
 	result := AnswerResult{RunID: run.ID, Source: run.Source}
 	if run.Status != "needs_input" {
+		if run.Status == "paused" {
+			return result, fmt.Errorf("run %s está pausada em gate; use aiw_refine com target intake/spec/plan", run.ID)
+		}
 		return result, fmt.Errorf("run %s não está aguardando input (status %s)", run.ID, run.Status)
 	}
 	src, err := sources.NewRegistry(cfg).Open(run.Source)

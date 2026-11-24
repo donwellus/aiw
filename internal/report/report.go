@@ -88,12 +88,13 @@ type Alert struct {
 
 var statusOrder = map[string]int{
 	"running":     0,
-	"paused":      1,
-	"needs_input": 2,
-	"failed":      3,
-	"todo":        4,
-	"canceled":    5,
-	"succeeded":   6,
+	"queued":      1,
+	"paused":      2,
+	"needs_input": 3,
+	"failed":      4,
+	"todo":        5,
+	"canceled":    6,
+	"succeeded":   7,
 }
 
 func (s Summary) OrderedStatuses() []StatusCount {

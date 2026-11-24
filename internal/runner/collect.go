@@ -7,12 +7,48 @@ import (
 	"os"
 
 	"github.com/donwellus/aiw/internal/source"
+	"github.com/donwellus/aiw/internal/state"
 )
 
 type Candidate struct {
 	Task *source.Task
 	Ref  source.Ref
 	Repo string
+}
+
+func (r *Runner) MarkQueued(candidates []Candidate) error {
+	for _, candidate := range candidates {
+		if candidate.Task == nil {
+			continue
+		}
+		record, found := r.lookupRecord(candidate.Task)
+		if found && record.Status == "running" && record.RunID != "" {
+			if _, active := r.store.FindClaimByRunID(record.RunID); active {
+				continue
+			}
+		}
+		sourceName := candidate.Task.Source
+		if sourceName == "" {
+			sourceName = candidate.Ref.Source
+		}
+		if err := r.store.Put(state.TaskRecord{
+			Key:         candidate.Task.ClaimKey,
+			Source:      sourceName,
+			ID:          candidate.Task.ExternalID,
+			Status:      "queued",
+			ContentHash: candidate.Task.ContentHash,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) lookupRecord(task *source.Task) (state.TaskRecord, bool) {
+	if task.ClaimKey != "" {
+		return r.store.FindByKey(task.ClaimKey)
+	}
+	return r.store.Get(task.Source, task.ExternalID)
 }
 
 func (r *Runner) Collect(ctx context.Context, src source.Source, filter source.Filter, repoOverride string, force bool, maxTasks int) ([]Candidate, []Outcome, error) {

@@ -1133,7 +1133,27 @@ func (p *Pipeline) promptData(run *RunState) prompts.Data {
 		DiffPath:       p.workArtifact(run, "diff.patch"),
 		TestLogPath:    p.workArtifact(run, "test.log"),
 		TestCommands:   p.Cfg.Workspace.TestCommands,
+		HumanFeedback:  p.humanFeedback(run, run.Stage),
 	}
+}
+
+func (p *Pipeline) humanFeedback(run *RunState, stage string) string {
+	name := ""
+	switch stage {
+	case "intake":
+		name = "intake.md"
+	case "requirements":
+		name = "spec.md"
+	case "architect":
+		name = "plan.md"
+	default:
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(p.runDir(run), "feedback", name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (p *Pipeline) render(name string, data prompts.Data) (string, error) {

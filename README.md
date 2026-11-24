@@ -173,8 +173,9 @@ aiw status                    # apenas o que está em andamento
 - `aiw list` sem `--all` é a fila de entrada; `doing/`, `done/` e `failed/` ficam fora.
 - `--all` (fonte `folder`) mostra tudo com colunas `STATUS` e `LOCAL`.
 - Status vem do estado por tarefa; localização (`inbox/doing/done/failed`) serve de fallback para tarefas antigas sem registro.
-- `aiw status` é o resumo vivo de running/paused/needs_input; deduplica pelo registro mais recente por ID (registros antigos de aliases não aparecem). `aiw status <run-id>` detalha uma execução.
-- `aiw runs` mostra só a run atual de cada tarefa; `aiw runs --all` inclui tentativas antigas e marca `SUPERSEDIDA POR`.
+- `aiw status` é o resumo vivo de running/queued/paused/needs_input; deduplica pelo registro mais recente por ID (registros antigos de aliases não aparecem). `aiw status <run-id>` detalha uma execução.
+- Tarefas na fila do `work`/daemon aparecem como `queued` e sobrevivem a um restart: o próximo ciclo as reencontra e processa.
+- `aiw runs` mostra só a run atual de cada tarefa; tarefas queued/todo não exibem a run cancelada antiga como atual. `aiw runs --all` inclui tentativas antigas e marca `SUPERSEDIDA POR`.
 - Aliases `folder`/`wave-*` apontando para a mesma pasta compartilham o claim canônico `folder:<pasta>:<id>`, evitando runs duplicadas.
 - Para fontes remotas, `--all` ainda não existe; use `aiw runs` para histórico de execuções.
 
@@ -230,11 +231,16 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
 
 - O coordenador recomendado é um agente primário do OpenCode negando `edit`,
   `shell` e `subagent`.
-- Leitura: `aiw_status`, `aiw_report`, `aiw_runs`, `aiw_run_show`, `aiw_events`,
-  `aiw_daemon_status`, `aiw_operations`, `aiw_clean_preview`.
-- Controle: pause, resume assíncrono, cancel, answer, approve, release e clean.
-  `release` e `clean_apply` pedem confirmação; `clean_apply` também exige
-  `confirm=true`.
+- Leitura: `aiw_situation`, `aiw_status`, `aiw_report`, `aiw_runs`,
+  `aiw_run_show`, `aiw_events`, `aiw_daemon_status`, `aiw_operations`,
+  `aiw_clean_preview`.
+- `aiw_situation` distingue fila `queued`, runs ativas, pausas com gate/blockers,
+  operações de controle e capacidade real (`worker_slots` × runs ativas).
+- Controle: pause, resume assíncrono, cancel, answer, refine, approve, release
+  e clean. `release` e `clean_apply` pedem confirmação; `clean_apply` também
+  exige `confirm=true`.
+- `aiw_refine` refina run pausada em gate com `target=intake|spec|plan`:
+  `spec` regenera spec e plano; `plan` regenera só o plano.
 - `resume` retorna um `operation_id`; o daemon executa em background para o
   coordenador continuar disponível.
 - `needs_input`: o coordenador lê as perguntas com `aiw_questions`, publica a
@@ -715,7 +721,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - Evals cobrem pipeline + verify + judge opcional + similaridade de referência; execução paralela de casos ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
-- Resposta inline de `needs_input` existe via MCP/coordenador; ainda não há comando CLI dedicado `aiw answer`.
+- Resposta inline de `needs_input` e refinamento de gates existem via MCP/coordenador; ainda não há comandos CLI dedicados.
 - Prioridade/hold, dependências e notificações proativas ainda não estão expostos ao coordenador.
 - Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.

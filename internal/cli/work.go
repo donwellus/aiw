@@ -137,6 +137,9 @@ func newWorkCommand(opts *rootOptions) *cobra.Command {
 				fmt.Fprintln(out, "nenhuma tarefa elegível")
 				return nil
 			}
+			if err := run.MarkQueued(candidates); err != nil {
+				return fmt.Errorf("registrando fila: %w", err)
+			}
 
 			outcomes := run.Work(ctx, jobs, workers, drain.drain, func(outcome runner.Outcome) {
 				switch outcome.Status {

@@ -81,7 +81,8 @@ Leitura:
 
 | Ferramenta | Função |
 |---|---|
-| `aiw_status` | resumo, ativos, claims, alertas e pausa |
+| `aiw_situation` | snapshot completo: daemon, capacidade, queued, running, paused com gate/blockers, operações, claims e alertas |
+| `aiw_status` | resumo, running/queued/paused/needs_input, claims, alertas e pausa |
 | `aiw_report` | relatório completo ou `summary_only` |
 | `aiw_runs` | runs atuais por tarefa; `all=true` inclui histórico |
 | `aiw_run_show` | run + eventos |
@@ -103,7 +104,8 @@ Controle:
 | `aiw_clean_apply` | exige `confirm=true` + confirmação no OpenCode |
 | `aiw_operation_cancel` | cancela operação pendente/em execução |
 | `aiw_cancel` | cancela run em andamento, pausada ou needs_input |
-| `aiw_answer` | publica resposta na fonte e enfileira rerun |
+| `aiw_answer` | publica resposta na fonte e enfileira rerun (só `needs_input`) |
+| `aiw_refine` | refina gate pausado com `target=intake\|spec\|plan` |
 
 `resume` não bloqueia: o daemon executa e o coordenador acompanha:
 
@@ -124,8 +126,9 @@ aiw_operation_show {operation_id: "op-..."}
 Você: como está o projeto?
 
 Coordenador:
-  [aiw_status]
-  Nenhuma tarefa ativa. 49 succeeded, 82 runs, US$ 2,73.
+  [aiw_situation]
+  Daemon ativo, 2 worker slots, 1 run via operação de controle, 2 tarefas queued.
+  49 succeeded, 82 runs, US$ 2,73.
 
 Você: a run X está pausada no gate spec. Aprova e retoma.
 
@@ -163,6 +166,8 @@ Coordenador:
 - O coordenador não faz merge, push ou deploy.
 - Workers continuam sujeitos a claims, worktrees, gates e permissões do aiw.
 - Operações ficam auditáveis em `.aiw/control/operations/`.
+- `aiw_situation` separa `worker_slots` de operações de controle; não interprete
+  `workers` como número total de runs.
 - `aiw_runs` esconde tentativas superadas por padrão; use `all=true` apenas para
   histórico.
 

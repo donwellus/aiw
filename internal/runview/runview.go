@@ -79,10 +79,12 @@ func Annotate(cfg *config.Config, store *state.Store, runs []*pipeline.RunState)
 	for _, run := range runs {
 		key := runKey(run, keys)
 		currentID := ""
-		if record, ok := records[key]; ok && record.RunID != "" {
+		record, hasRecord := records[key]
+		pending := hasRecord && (record.Status == "queued" || record.Status == "todo")
+		if hasRecord && !pending && record.RunID != "" {
 			currentID = record.RunID
 		}
-		if currentID == "" || !hasRun(byKey[key], currentID) {
+		if !pending && (currentID == "" || !hasRun(byKey[key], currentID)) {
 			if latestRun := latest[key]; latestRun != nil {
 				currentID = latestRun.ID
 			}

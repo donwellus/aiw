@@ -27,6 +27,13 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 	}
 	tools := []map[string]any{
 		{
+			"name":        "situation",
+			"title":       "Situação completa",
+			"description": "Snapshot determinístico de daemon, capacidade, fila, runs ativas/pausadas, operações, claims e alertas.",
+			"inputSchema": objectSchema(map[string]any{}),
+			"annotations": readOnly,
+		},
+		{
 			"name":        "status",
 			"title":       "Status do aiw",
 			"description": "Resumo do estado atual: pausa global, contagem por status, tarefas ativas, claims e alertas.",
@@ -177,6 +184,19 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
 		},
 		map[string]any{
+			"name":        "refine",
+			"title":       "Refinar gate",
+			"description": "Refina spec ou plan de uma run pausada, com target explícito. Requer daemon ativo.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":     map[string]any{"type": "string"},
+				"target":     map[string]any{"type": "string", "enum": []string{"intake", "spec", "plan"}, "description": "Artefato mais antigo invalidado"},
+				"feedback":   map[string]any{"type": "string", "description": "Refinamento humano"},
+				"auto":       map[string]any{"type": "boolean", "description": "Aprova gates automáticos após regenerar"},
+				"budget_usd": map[string]any{"type": "number", "minimum": 0},
+			}, "run_id", "target", "feedback"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
+		},
+		map[string]any{
 			"name":        "answer",
 			"title":       "Responder needs_input",
 			"description": "Publica a resposta na fonte e enfileira um rerun no daemon.",
@@ -236,6 +256,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return nil, &rpcError{Code: -32602, Message: "escrita desabilitada; use aiw mcp --allow-write", Data: params.Name}
 	}
 	switch params.Name {
+	case "situation":
+		return s.toolSituation()
 	case "status":
 		return s.toolStatus(ctx)
 	case "report":
@@ -266,6 +288,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolApprove(params.Arguments)
 	case "answer":
 		return s.toolAnswer(ctx, params.Arguments)
+	case "refine":
+		return s.toolRefine(params.Arguments)
 	case "release":
 		return s.toolRelease(ctx, params.Arguments)
 	case "clean_apply":
@@ -279,7 +303,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer":
+	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine":
 		return true
 	default:
 		return false
@@ -427,6 +451,50 @@ func (s *Server) toolAnswer(ctx context.Context, raw json.RawMessage) (any, *rpc
 		return toolError(err.Error()), nil
 	}
 	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolRefine(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID     string  `json:"run_id"`
+		Target    string  `json:"target"`
+		Feedback  string  `json:"feedback"`
+		Auto      bool    `json:"auto"`
+		BudgetUSD float64 `json:"budget_usd"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	target := strings.ToLower(strings.TrimSpace(args.Target))
+	if target != control.TargetIntake && target != control.TargetSpec && target != control.TargetPlan {
+		return nil, invalidParams(errors.New("target inválido (use intake, spec ou plan)"))
+	}
+	if strings.TrimSpace(args.Feedback) == "" {
+		return nil, invalidParams(errors.New("feedback vazio"))
+	}
+	if _, active := control.DaemonActive(s.cfg, 15*time.Second); !active {
+		return toolError("daemon não está ativo; inicie aiw daemon para processar refinamentos"), nil
+	}
+	ops, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	operation, err := ops.Enqueue(control.ActionRefine, args.RunID, map[string]any{
+		"target":     target,
+		"feedback":   args.Feedback,
+		"auto":       args.Auto,
+		"budget_usd": args.BudgetUSD,
+	})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(map[string]any{"operation": operation})
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
@@ -618,7 +686,7 @@ func (s *Server) toolStatus(ctx context.Context) (any, *rpcError) {
 	active := make([]report.Task, 0)
 	for _, task := range built.Tasks {
 		switch task.Status {
-		case "running", "paused", "needs_input":
+		case "running", "queued", "paused", "needs_input":
 			active = append(active, task)
 		}
 	}

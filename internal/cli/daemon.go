@@ -314,6 +314,9 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 					})
 				}
 				if len(jobs) > 0 && !drain.Draining() && !pause.Active(cfg.DataDir()) {
+					if err := run.MarkQueued(candidates); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "[daemon] aviso: falha ao registrar fila: %v\n", err)
+					}
 					fmt.Fprintf(logOut, "[daemon] ciclo: %d tarefa(s)\n", len(jobs))
 					cycleCh, stopCycle := cycleDrain(ctx, drain.drain, cfg.DataDir(), pausePoll)
 					run.Work(ctx, jobs, workers, cycleCh, func(outcome runner.Outcome) {

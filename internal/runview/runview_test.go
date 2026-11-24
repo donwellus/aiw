@@ -45,6 +45,8 @@ func TestBuildAnnotatesCurrentRuns(t *testing.T) {
 	save("c-new", "c", "C nova", "succeeded", "folder", now.Add(-3*time.Hour))
 	save("d-old", "d", "D antiga", "failed", "folder", now.Add(-5*time.Hour))
 	save("d-new", "d", "D nova", "failed", "folder", now.Add(-time.Hour))
+	save("e-old", "e", "E cancelada", "canceled", "folder", now.Add(-2*time.Hour))
+	save("f-old", "f", "F cancelada", "canceled", "folder", now.Add(-2*time.Hour))
 
 	put := func(sourceName, id, status, runID string) {
 		t.Helper()
@@ -56,6 +58,8 @@ func TestBuildAnnotatesCurrentRuns(t *testing.T) {
 	put("folder", "b", "running", "b-current")
 	put("alias", "c", "needs_input", "c-old") // registro antigo de alias
 	put("folder", "c", "succeeded", "c-new")
+	put("folder", "e", "queued", "")
+	put("folder", "f", "todo", "f-old")
 	// d fica sem estado; a run mais nova é a atual.
 
 	entries, err := Build(cfg, store)
@@ -77,6 +81,12 @@ func TestBuildAnnotatesCurrentRuns(t *testing.T) {
 	}
 	if !byID["d-new"].Current || byID["d-old"].Current || byID["d-old"].SupersededBy != "d-new" {
 		t.Fatalf("d: %+v %+v", byID["d-new"], byID["d-old"])
+	}
+	if byID["e-old"].Current || byID["e-old"].SupersededBy != "" {
+		t.Fatalf("queued não deveria ter run atual: %+v", byID["e-old"])
+	}
+	if byID["f-old"].Current || byID["f-old"].SupersededBy != "" {
+		t.Fatalf("todo não deveria ter run atual: %+v", byID["f-old"])
 	}
 	if got := len(Current(entries)); got != 4 {
 		t.Fatalf("current = %d, esperado 4", got)

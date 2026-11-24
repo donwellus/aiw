@@ -34,4 +34,8 @@ Regras:
   RISK: LOW
   (ou DECISION: NEEDS_INPUT e RISK: MEDIUM/HIGH quando faltar informação)
 - Com `DECISION: READY`, "Perguntas bloqueantes" deve estar vazio ou conter "Nenhuma".
+{{if .HumanFeedback}}
+Refinamento humano para esta etapa (incorpore integralmente):
+{{.HumanFeedback}}
+{{end}}
 - Responda em português.

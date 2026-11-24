@@ -28,6 +28,7 @@ type Data struct {
 	TestLog        string
 	Diff           string
 	Feedback       string
+	HumanFeedback  string
 	ReviewRound    int
 	TestCommands   []string
 }

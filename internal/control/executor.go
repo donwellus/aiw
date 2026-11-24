@@ -107,6 +107,8 @@ func (e *Executor) runOperation(ctx context.Context, operation *Operation) (map[
 		return e.runResumeAll(ctx, operation)
 	case ActionRerun:
 		return e.runRerun(ctx, operation)
+	case ActionRefine:
+		return e.runRefine(ctx, operation)
 	default:
 		return nil, errors.New("ação de operação desconhecida: " + operation.Action)
 	}
@@ -145,6 +147,26 @@ func (e *Executor) runResumeAll(ctx context.Context, operation *Operation) (map[
 		"count":         len(results),
 		"runs":          results,
 	}, nil
+}
+
+func (e *Executor) runRefine(ctx context.Context, operation *Operation) (map[string]any, error) {
+	target, _ := operation.Args["target"].(string)
+	feedback, _ := operation.Args["feedback"].(string)
+	_, prepared, err := PrepareRefine(e.cfg, operation.RunID, target, feedback)
+	if err != nil {
+		return nil, err
+	}
+	outcome, runErr := e.runner.Resume(ctx, operation.RunID, operationOptions(operation.Args))
+	result := outcomeResult(outcome, runErr)
+	result["target"] = prepared.Target
+	result["feedback_file"] = prepared.FeedbackFile
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	if outcome.RunID == "" && runErr != nil {
+		return result, runErr
+	}
+	return result, nil
 }
 
 func (e *Executor) runRerun(ctx context.Context, operation *Operation) (map[string]any, error) {

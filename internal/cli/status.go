@@ -84,14 +84,14 @@ func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) erro
 	active := make([]state.TaskRecord, 0)
 	for _, record := range records {
 		switch record.Status {
-		case "running", "paused", "needs_input":
+		case "running", "queued", "paused", "needs_input":
 			active = append(active, record)
 		}
 	}
 	sort.Slice(active, func(i, j int) bool { return active[i].UpdatedAt.After(active[j].UpdatedAt) })
 	out := cmd.OutOrStdout()
 	if len(active) == 0 {
-		fmt.Fprintln(out, "nenhuma tarefa em andamento (running/paused/needs_input)")
+		fmt.Fprintln(out, "nenhuma tarefa em andamento (running/queued/paused/needs_input)")
 		return nil
 	}
 	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
@@ -107,7 +107,11 @@ func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) erro
 				cost = run.Usage.CostUSD
 			}
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\tUS$ %.4f\n", record.ID, status, stage, record.RunID, cost)
+		runID := record.RunID
+		if runID == "" {
+			runID = "-"
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\tUS$ %.4f\n", record.ID, status, stage, runID, cost)
 	}
 	writer.Flush()
 	fmt.Fprintf(out, "\n%d tarefa(s) em andamento\n", len(active))

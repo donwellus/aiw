@@ -26,6 +26,10 @@ Regras:
 - Estrutura obrigatória do arquivo: Contexto, Objetivo, Escopo, Fora de escopo, Critérios de aceite verificáveis, Perguntas abertas.
 - Cada critério de aceite deve ser verificável por comando, comportamento observável ou teste.
 - Registre ambiguidades em Perguntas abertas; não invente requisitos.
+{{if .HumanFeedback}}
+Refinamento humano para esta etapa (incorpore integralmente):
+{{.HumanFeedback}}
+{{end}}
 {{if .Feedback}}
 Feedback do validador anterior (corrija todos os pontos):
 {{.Feedback}}

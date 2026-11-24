@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/donwellus/aiw/internal/config"
+	"github.com/donwellus/aiw/internal/control"
 	"github.com/donwellus/aiw/internal/engine"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/source"
@@ -214,7 +215,7 @@ func TestWriteTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "questions"} {
+	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "questions", "situation"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente", want)
 		}
@@ -269,5 +270,72 @@ func TestRunsCurrentAndAll(t *testing.T) {
 	all := toolStructured(t, responses[1])
 	if int(all["total"].(float64)) != 2 {
 		t.Fatalf("runs histórico = %+v", all)
+	}
+}
+
+func TestSituationIncludesQueuePauseAndCapacity(t *testing.T) {
+	server, cfg, store := newTestServer(t)
+	now := time.Now().UTC()
+	paused := &pipeline.RunState{
+		ID:        "run-paused",
+		Task:      source.Task{Source: "folder", ExternalID: "task-paused", Title: "Pausada"},
+		Source:    "folder",
+		Status:    "paused",
+		Stage:     "requirements",
+		Gates:     map[string]string{"spec": "escalated", "plan": "pending"},
+		CreatedAt: now.Add(-time.Hour),
+	}
+	if err := pipeline.SaveRun(cfg, paused); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(state.TaskRecord{Source: "folder", ID: "task-paused", Status: "paused", RunID: paused.ID}); err != nil {
+		t.Fatal(err)
+	}
+	events := `{"time":"` + now.Add(-2*time.Minute).Format(time.RFC3339Nano) + `","name":"validation.rejected","blockers":["BLOCKING: falta critério","BLOCKING: contrato ambíguo"]}` + "\n"
+	if err := os.WriteFile(filepath.Join(cfg.RunsDir(), paused.ID, "events.jsonl"), []byte(events), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(state.TaskRecord{Source: "folder", ID: "task-queued", Status: "queued"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.WriteDaemonInfo(cfg, control.DaemonInfo{PID: os.Getpid(), Workers: 2, Interval: "1m", StartedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ops, err := control.OpenOperationStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.Enqueue(control.ActionResume, paused.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.ClaimNext(); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"situation","arguments":{}}}`+"\n")
+	situation := toolStructured(t, responses[0])
+	daemon := situation["daemon"].(map[string]any)
+	if daemon["active"] != true || int(daemon["worker_slots"].(float64)) != 2 {
+		t.Fatalf("daemon = %+v", daemon)
+	}
+	capacity := situation["capacity"].(map[string]any)
+	if int(capacity["active_control_operations"].(float64)) != 1 || int(capacity["queued_tasks"].(float64)) != 1 {
+		t.Fatalf("capacity = %+v", capacity)
+	}
+	queued := situation["queued"].([]any)
+	if len(queued) != 1 {
+		t.Fatalf("queued = %+v", queued)
+	}
+	pausedTasks := situation["paused"].([]any)
+	if len(pausedTasks) != 1 {
+		t.Fatalf("paused = %+v", pausedTasks)
+	}
+	pausedTask := pausedTasks[0].(map[string]any)
+	if pausedTask["gate"] != "spec" || !strings.Contains(pausedTask["reason"].(string), "gate spec") {
+		t.Fatalf("paused task = %+v", pausedTask)
+	}
+	blockers := pausedTask["blockers"].([]any)
+	if len(blockers) != 2 {
+		t.Fatalf("blockers = %+v", blockers)
 	}
 }

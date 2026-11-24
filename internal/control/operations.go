@@ -26,6 +26,7 @@ const (
 	ActionResume    = "resume"
 	ActionResumeAll = "resume_all"
 	ActionRerun     = "rerun"
+	ActionRefine    = "refine"
 )
 
 type Operation struct {
@@ -58,7 +59,7 @@ func (s *OperationStore) Dir() string {
 }
 
 func (s *OperationStore) Enqueue(action, runID string, args map[string]any) (*Operation, error) {
-	if action != ActionResume && action != ActionResumeAll && action != ActionRerun {
+	if action != ActionResume && action != ActionResumeAll && action != ActionRerun && action != ActionRefine {
 		return nil, fmt.Errorf("ação de operação desconhecida: %s", action)
 	}
 	operation := &Operation{
