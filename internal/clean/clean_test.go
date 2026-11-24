@@ -313,6 +313,9 @@ func TestSupersededAcrossFolderAliases(t *testing.T) {
 	if err := pipeline.SaveRun(cfg, run); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Put(state.TaskRecord{Source: "alias", ID: "task-alias", Status: "needs_input", RunID: run.ID}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Put(state.TaskRecord{Source: "folder", ID: "task-alias", Status: "succeeded", RunID: "run-newer"}); err != nil {
 		t.Fatal(err)
 	}
@@ -322,5 +325,8 @@ func TestSupersededAcrossFolderAliases(t *testing.T) {
 	}
 	if len(result.Actions) != 1 || result.Actions[0].SupersededBy != "run-newer" {
 		t.Fatalf("alias não reconhecido como superseded: %+v", result.Actions)
+	}
+	if result.Actions[0].WorktreeAction != "remove" {
+		t.Fatalf("estado antigo do alias não deveria bloquear: %+v", result.Actions[0])
 	}
 }

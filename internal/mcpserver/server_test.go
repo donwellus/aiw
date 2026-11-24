@@ -243,3 +243,31 @@ func TestWriteTools(t *testing.T) {
 		t.Fatalf("clean_apply sem confirm deveria falhar: %+v", responses[4])
 	}
 }
+
+func TestRunsCurrentAndAll(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	old := &pipeline.RunState{
+		ID:        "run-old",
+		Task:      source.Task{Source: "folder", ExternalID: "task-1", Title: "Tarefa 1", ClaimKey: "folder:task-1"},
+		Source:    "folder",
+		Status:    "needs_input",
+		Stage:     "intake",
+		CreatedAt: time.Date(2026, 11, 22, 11, 0, 0, 0, time.UTC),
+	}
+	if err := pipeline.SaveRun(cfg, old); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"runs","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"runs","arguments":{"all":true}}}`,
+	}, "\n") + "\n"
+	responses := serve(t, server, input)
+	current := toolStructured(t, responses[0])
+	if int(current["total"].(float64)) != 1 {
+		t.Fatalf("runs atuais = %+v", current)
+	}
+	all := toolStructured(t, responses[1])
+	if int(all["total"].(float64)) != 2 {
+		t.Fatalf("runs histórico = %+v", all)
+	}
+}

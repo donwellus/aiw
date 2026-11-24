@@ -15,6 +15,7 @@ import (
 	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/report"
+	"github.com/donwellus/aiw/internal/runview"
 )
 
 func toolDefinitions(allowWrite bool) []map[string]any {
@@ -48,6 +49,7 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"inputSchema": objectSchema(map[string]any{
 				"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
 				"status": map[string]any{"type": "string", "description": "Filtra por status exato"},
+				"all":    map[string]any{"type": "boolean", "description": "Inclui tentativas antigas/superadas"},
 			}),
 			"annotations": readOnly,
 		},
@@ -668,6 +670,8 @@ func (s *Server) toolReport(ctx context.Context, raw json.RawMessage) (any, *rpc
 
 type runSummary struct {
 	RunID        string    `json:"run_id"`
+	Current      bool      `json:"current"`
+	SupersededBy string    `json:"superseded_by,omitempty"`
 	TaskID       string    `json:"task_id"`
 	Title        string    `json:"title"`
 	Source       string    `json:"source,omitempty"`
@@ -689,6 +693,7 @@ func (s *Server) toolRuns(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	var args struct {
 		Limit  int    `json:"limit"`
 		Status string `json:"status"`
+		All    bool   `json:"all"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &args); err != nil {
@@ -702,33 +707,31 @@ func (s *Server) toolRuns(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 	if limit > 200 {
 		limit = 200
 	}
-	runs, err := s.loadRuns()
+	entries, err := runview.Build(s.cfg, s.store)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
-	sort.Slice(runs, func(i, j int) bool {
-		left := runTimestamp(runs[i])
-		right := runTimestamp(runs[j])
-		if !left.Equal(right) {
-			return left.After(right)
-		}
-		return runs[i].ID > runs[j].ID
-	})
-	filtered := make([]*pipeline.RunState, 0, len(runs))
-	for _, run := range runs {
-		if args.Status != "" && run.Status != args.Status {
+	if !args.All {
+		entries = runview.Current(entries)
+	}
+	filtered := make([]runview.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if args.Status != "" && entry.Run.Status != args.Status {
 			continue
 		}
-		filtered = append(filtered, run)
+		filtered = append(filtered, entry)
 	}
 	total := len(filtered)
 	if len(filtered) > limit {
 		filtered = filtered[:limit]
 	}
 	out := make([]runSummary, 0, len(filtered))
-	for _, run := range filtered {
+	for _, entry := range filtered {
+		run := entry.Run
 		out = append(out, runSummary{
 			RunID:        run.ID,
+			Current:      entry.Current,
+			SupersededBy: entry.SupersededBy,
 			TaskID:       run.Task.ExternalID,
 			Title:        run.Task.Title,
 			Source:       run.Source,
@@ -840,28 +843,6 @@ func (s *Server) toolEvents(ctx context.Context, raw json.RawMessage) (any, *rpc
 	return result, nil
 }
 
-func (s *Server) loadRuns() ([]*pipeline.RunState, error) {
-	entries, err := os.ReadDir(s.cfg.RunsDir())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	runs := make([]*pipeline.RunState, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		run, err := pipeline.LoadRun(s.cfg, entry.Name())
-		if err != nil {
-			continue
-		}
-		runs = append(runs, run)
-	}
-	return runs, nil
-}
-
 func (s *Server) readRunEvents(runID string) []map[string]any {
 	path := filepath.Join(s.cfg.RunsDir(), runID, "events.jsonl")
 	data, err := os.ReadFile(path)
@@ -882,14 +863,4 @@ func (s *Server) readRunEvents(runID string) []map[string]any {
 		events = append(events, event)
 	}
 	return events
-}
-
-func runTimestamp(run *pipeline.RunState) time.Time {
-	if run == nil {
-		return time.Time{}
-	}
-	if !run.CreatedAt.IsZero() {
-		return run.CreatedAt
-	}
-	return run.UpdatedAt
 }

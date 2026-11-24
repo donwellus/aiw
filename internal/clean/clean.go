@@ -206,16 +206,11 @@ func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run
 	if claim, found := store.FindClaimByRunID(run.ID); found {
 		return skip(fmt.Sprintf("claim ativo (pid %d)", claim.PID))
 	}
-	if record, found := store.FindByRunID(run.ID); found && activeStatuses[record.Status] {
-		return skip("tarefa com estado ativo: " + record.Status)
-	}
 	if strings.TrimSpace(run.Task.Source) == "" || strings.TrimSpace(run.Task.ExternalID) == "" {
 		return skip("run sem identidade de tarefa")
 	}
-	if latest, found := latestRecords(store.All(), keys)[runKey(run, keys)]; found {
-		if latest.RunID != run.ID && activeStatuses[latest.Status] {
-			return skip("tarefa com estado ativo: " + latest.Status)
-		}
+	if latest, found := latestRecords(store.All(), keys)[runKey(run, keys)]; found && activeStatuses[latest.Status] {
+		return skip("tarefa com estado ativo: " + latest.Status)
 	}
 
 	var claim *state.Claim
@@ -247,11 +242,8 @@ func processRun(ctx context.Context, cfg *config.Config, store *state.Store, run
 		action.Branch = run.Branch
 		records := latestRecords(store.All(), keys)
 		latest, hasLatest := records[runKey(run, keys)]
-		if hasLatest && latest.RunID != run.ID && activeStatuses[latest.Status] {
+		if hasLatest && activeStatuses[latest.Status] {
 			return skip("tarefa com estado ativo: " + latest.Status)
-		}
-		if record, found := store.FindByRunID(run.ID); found && activeStatuses[record.Status] {
-			return skip("tarefa com estado ativo: " + record.Status)
 		}
 		if byStatus {
 			if !terminalStatuses[run.Status] {

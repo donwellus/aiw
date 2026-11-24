@@ -147,7 +147,7 @@ aiw resume <run-id>
 | `aiw intake <run-id>` | mostra intake e perguntas de uma execução |
 | `aiw pause [run-id]` | sem id: pausa global (`.aiw/PAUSE`); com id: pausa uma execução |
 | `aiw release <run-id>` | libera claim/estado de uma execução morta |
-| `aiw runs [--json]` | lista execuções |
+| `aiw runs [--all] [--json]` | lista runs atuais; `--all` inclui histórico |
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
 | `aiw clean [--dry-run] [--force] [--keep-branches] [--skip-superseded] [--json]` | remove worktrees e branches de runs terminais/superadas |
@@ -174,6 +174,7 @@ aiw status                    # apenas o que está em andamento
 - `--all` (fonte `folder`) mostra tudo com colunas `STATUS` e `LOCAL`.
 - Status vem do estado por tarefa; localização (`inbox/doing/done/failed`) serve de fallback para tarefas antigas sem registro.
 - `aiw status` é o resumo vivo de running/paused/needs_input; deduplica pelo registro mais recente por ID (registros antigos de aliases não aparecem). `aiw status <run-id>` detalha uma execução.
+- `aiw runs` mostra só a run atual de cada tarefa; `aiw runs --all` inclui tentativas antigas e marca `SUPERSEDIDA POR`.
 - Aliases `folder`/`wave-*` apontando para a mesma pasta compartilham o claim canônico `folder:<pasta>:<id>`, evitando runs duplicadas.
 - Para fontes remotas, `--all` ainda não existe; use `aiw runs` para histórico de execuções.
 

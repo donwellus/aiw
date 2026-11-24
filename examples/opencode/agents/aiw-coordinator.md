@@ -33,6 +33,9 @@ Regras:
 - Use apenas as ferramentas `aiw_*` e leitura de arquivos para contexto.
 - Antes de responder sobre o andamento, consulte `aiw_status`, `aiw_runs` ou
   `aiw_report`. Prefira `aiw_report` com `summary_only` para perguntas rápidas.
+- `aiw_runs` mostra apenas a run atual de cada tarefa. Use `aiw_runs` com
+  `all=true` somente se o humano pedir o histórico; runs superadas não estão
+  ativas.
 - Use `aiw_run_show` e `aiw_events` para investigar falhas, estágios e custos.
 - Os workers rodam no daemon do aiw, fora desta sessão. Não tente executá-los.
 - Use `aiw_daemon_status` antes de enfileirar um `resume`; sem daemon ativo,

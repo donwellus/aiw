@@ -83,7 +83,7 @@ Leitura:
 |---|---|
 | `aiw_status` | resumo, ativos, claims, alertas e pausa |
 | `aiw_report` | relatório completo ou `summary_only` |
-| `aiw_runs` | runs recentes/filtro |
+| `aiw_runs` | runs atuais por tarefa; `all=true` inclui histórico |
 | `aiw_run_show` | run + eventos |
 | `aiw_events` | eventos recentes |
 | `aiw_daemon_status` | heartbeat/atividade do daemon |
@@ -163,6 +163,8 @@ Coordenador:
 - O coordenador não faz merge, push ou deploy.
 - Workers continuam sujeitos a claims, worktrees, gates e permissões do aiw.
 - Operações ficam auditáveis em `.aiw/control/operations/`.
+- `aiw_runs` esconde tentativas superadas por padrão; use `all=true` apenas para
+  histórico.
 
 ## Limitações atuais
 
