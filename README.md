@@ -358,9 +358,11 @@ aiw resume <run-id>          # retoma pausa/gate/cancelamento
 ### Intake e gates automáticos
 
 - **DoR**: descrição mínima, critérios de aceite (do source ou propostos no intake) e perguntas abertas.
-- O agente de intake grava `intake.md` e `questions.md` e termina com `DECISION: READY|NEEDS_INPUT` e `RISK: LOW|MEDIUM|HIGH`.
+- O agente de intake grava `intake.md` com “Decisões assumidas” e “Perguntas bloqueantes” e termina com `DECISION: READY|NEEDS_INPUT` e `RISK: LOW|MEDIUM|HIGH`.
+- `DECISION: READY` significa que o agente tem contexto suficiente e segue com as decisões assumidas; só `NEEDS_INPUT` cria `questions.md` e para para o humano.
 - **Política**: `needs_input` para tarefa incompleta; risco alto ou labels como `risk:high`, `security`, `db-migration` escalam para humano; caso contrário segue automático.
-- `needs_input` não é falha: a tarefa fica no inbox, o claim é liberado e o estado aparece em `aiw list --status needs_input`. Edite a tarefa na fonte (o hash muda) e rode novamente, ou use `aiw_answer` pelo coordenador: ele lê as perguntas, publica a resposta na fonte e enfileira um rerun.
+- `needs_input` não é falha: a tarefa fica no inbox, o claim é liberado e o estado aparece em `aiw list --status needs_input`. Só use quando a decisão depender do humano; decisões que o agente consegue resolver viram “Decisões assumidas”.
+- Para responder, edite a tarefa na fonte (o hash muda) e rode novamente, ou use `aiw_answer` pelo coordenador: ele lê as perguntas, publica a resposta na fonte e enfileira um rerun.
 - **Spec/plan**: validadores com contexto limpo, até `max_gate_rounds` tentativas de correção. Se continuar reprovando, o gate escala para humano (`aiw approve` + `aiw resume`).
 - `--auto` aprova gates humanos (inclusive risco no intake); falhas de validação automática após `max_gate_rounds` continuam escalando para revisão.
 

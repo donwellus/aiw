@@ -128,23 +128,32 @@ func TestClaimStale(t *testing.T) {
 func TestClaimConcurrent(t *testing.T) {
 	store, _ := openStore(t)
 	var successes int32
+	start := make(chan struct{})
+	release := make(chan struct{})
+	var attempts sync.WaitGroup
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
+		attempts.Add(1)
 		wg.Add(1)
-		go func(index int) {
+		go func() {
 			defer wg.Done()
+			<-start
 			claim, ok, err := store.Claim("folder", "001", "run", time.Hour)
+			attempts.Done()
 			if err != nil {
 				t.Errorf("Claim: %v", err)
 				return
 			}
 			if ok {
 				atomic.AddInt32(&successes, 1)
-				time.Sleep(5 * time.Millisecond)
+				<-release
 				_ = claim.Release()
 			}
-		}(i)
+		}()
 	}
+	close(start)
+	attempts.Wait()
+	close(release)
 	wg.Wait()
 	if successes != 1 {
 		t.Fatalf("claims bem-sucedidos = %d, esperado 1", successes)

@@ -23,12 +23,15 @@ Regras:
 - Explore o repositório apenas para leitura.
 - Não altere nenhum arquivo do repositório.
 - Grave o intake em: {{.IntakePath}}
-- Se houver perguntas que realmente impedem começar, grave uma por linha em: {{.QuestionsPath}}
-- O intake deve conter as seções: Resumo, Escopo, Fora de escopo, Critérios de aceite, Perguntas abertas, Risco e Decisão.
+- Use `DECISION: NEEDS_INPUT` somente quando uma resposta humana for indispensável para começar.
+- Se puder decidir com o contexto do repositório, registre a escolha em "Decisões assumidas" e use `DECISION: READY`.
+- Perguntas que realmente bloqueiam devem ficar em "Perguntas bloqueantes" e ser gravadas uma por linha em: {{.QuestionsPath}}
+- O intake deve conter as seções: Resumo, Escopo, Fora de escopo, Decisões assumidas, Critérios de aceite, Perguntas bloqueantes, Risco e Decisão.
 - Se o source não tiver critérios de aceite, proponha critérios verificáveis (comando, comportamento observável ou teste).
-- Não invente requisitos; na dúvida, registre a pergunta.
+- Não invente requisitos; quando a informação vier do repositório, assuma e documente. Só use NEEDS_INPUT quando a decisão depender do humano.
 - O arquivo deve terminar com exatamente duas linhas de controle:
   DECISION: READY
   RISK: LOW
   (ou DECISION: NEEDS_INPUT e RISK: MEDIUM/HIGH quando faltar informação)
+- Com `DECISION: READY`, "Perguntas bloqueantes" deve estar vazio ou conter "Nenhuma".
 - Responda em português.

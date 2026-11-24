@@ -369,7 +369,7 @@ func (s *Server) toolQuestions(raw json.RawMessage) (any, *rpcError) {
 	dir := filepath.Join(s.cfg.RunsDir(), args.RunID)
 	value := map[string]any{"run_id": args.RunID}
 	found := false
-	for _, name := range []string{"questions.md", "intake.md", "answer.md"} {
+	for _, name := range []string{"questions.md", "assumptions.md", "intake.md", "answer.md"} {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {

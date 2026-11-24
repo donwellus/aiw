@@ -365,3 +365,60 @@ func TestPRBodyClosesGitHubIssueOnMerge(t *testing.T) {
 		t.Fatalf("fonte folder não deveria fechar issue:\n%s", body)
 	}
 }
+
+func TestParseIntakeJoinsWrappedItemsAndSeparatesAssumptions(t *testing.T) {
+	text := `# Intake
+
+## Decisões assumidas
+
+- Timeout fixo de 2000 ms; configuração
+  fica para depois.
+- Usar SQLite local.
+
+## Perguntas bloqueantes
+
+Nenhuma pergunta bloqueante.
+
+## Critérios de aceite
+
+- O painel mostra o diagnóstico
+  mesmo com o worker morto.
+
+DECISION: READY
+RISK: LOW
+`
+	verdict := parseIntake(text)
+	if verdict.Decision != "READY" || verdict.Risk != "LOW" {
+		t.Fatalf("verdict = %+v", verdict)
+	}
+	if len(verdict.Assumptions) != 2 || !strings.Contains(verdict.Assumptions[0], "configuração fica") {
+		t.Fatalf("assumptions = %#v", verdict.Assumptions)
+	}
+	if len(verdict.Questions) != 0 {
+		t.Fatalf("questions = %#v", verdict.Questions)
+	}
+	if len(verdict.Acceptance) != 1 || !strings.Contains(verdict.Acceptance[0], "worker morto") {
+		t.Fatalf("acceptance = %#v", verdict.Acceptance)
+	}
+}
+
+func TestIntakeReadyDoesNotBlockOnNonBlockingQuestions(t *testing.T) {
+	cfg := &config.Config{Intake: config.IntakeConfig{MinDescriptionChars: 10}}
+	p := &Pipeline{Cfg: cfg}
+	run := &RunState{Task: source.Task{
+		Description: "Descrição suficientemente longa para o intake.",
+		Acceptance:  []string{"Critério verificável."},
+	}}
+	verdict := intakeVerdict{
+		Decision:  "READY",
+		Questions: []string{"Qual timeout usar?", "Como detectar SW antigo?"},
+	}
+	if reasons := p.intakeBlockingReasons(run, verdict); len(reasons) != 0 {
+		t.Fatalf("READY com perguntas não bloqueantes parou: %v", reasons)
+	}
+	verdict.Decision = "NEEDS_INPUT"
+	reasons := p.intakeBlockingReasons(run, verdict)
+	if len(reasons) == 0 {
+		t.Fatal("NEEDS_INPUT deveria bloquear")
+	}
+}

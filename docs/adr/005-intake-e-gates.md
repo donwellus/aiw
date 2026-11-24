@@ -11,21 +11,25 @@ O pipeline começava em requirements e dependia de gates humanos em spec/plan. I
 
 1. **Nova etapa `intake`** antes de requirements:
    - explora o repositório apenas para leitura;
-   - grava `intake.md` com resumo, escopo, fora de escopo, critérios de aceite, perguntas, risco e decisão;
-   - grava `questions.md` quando falta informação.
+   - grava `intake.md` com resumo, escopo, fora de escopo, decisões assumidas,
+     critérios de aceite, perguntas bloqueantes, risco e decisão;
+   - grava `questions.md` somente quando uma decisão humana é indispensável;
+   - registra decisões não bloqueantes em `assumptions.md`.
 2. **Contrato simples** no fim do intake: `DECISION: READY|NEEDS_INPUT` e `RISK: LOW|MEDIUM|HIGH`.
 3. **DoR determinístico complementar**:
    - descrição mínima (`intake.min_description_chars`, default 10);
    - critérios de aceite no source ou propostos no intake;
-   - decisão READY e nenhuma pergunta aberta.
+   - decisão READY; perguntas não bloqueantes não invalidam a tarefa;
+   - perguntas só bloqueiam quando o intake marca `DECISION: NEEDS_INPUT`.
 4. **Política** (`gates.intake: policy`):
-   - falha de DoR/perguntas → status `needs_input` (não é falha);
+   - falha de DoR ou `DECISION: NEEDS_INPUT` → status `needs_input` (não é falha);
    - risco HIGH ou labels configurados (`risk_labels`) → gate humano;
    - caso contrário, segue automaticamente.
 5. **`needs_input`**:
    - claim é liberado, tarefa permanece no inbox, estado `needs_input`;
    - o pool ignora enquanto o hash não mudar;
-   - o humano edita a tarefa na fonte e roda novamente.
+   - o humano edita/responde e o rerun continua; decisões que o agente consegue
+     tomar sozinho vão para “Decisões assumidas” e não param o pipeline.
 6. **Validadores de spec/plan**:
    - chamadas com contexto limpo, rubrica e saída `DECISION: APPROVED|REJECTED` + `BLOCKING:`;
    - até `max_gate_rounds` correções;
@@ -48,7 +52,9 @@ Negativas e riscos:
 
 - Custo adicional de intake + validadores.
 - Parsing de decisões em Markdown depende do contrato de prompt; prompts e testes precisam evoluir juntos.
-- `needs_input` exige edição da tarefa (sem resposta inline nesta fase).
+- Bullets quebrados em várias linhas precisam ser unidos pelo parser; coberto por testes.
+- `needs_input` agora tem resposta inline via coordenador/MCP, mas a CLI dedicada
+  ainda não existe.
 - Validador pode rejeitar por estilo; `max_gate_rounds` e prompts precisam ser calibrados com tasks reais.
 
 ## Alternativas

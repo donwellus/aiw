@@ -373,24 +373,31 @@ func (p *Pipeline) runArtifactStage(ctx context.Context, run *RunState, trace te
 }
 
 type intakeVerdict struct {
-	Decision   string
-	Risk       string
-	Questions  []string
-	Acceptance []string
+	Decision    string
+	Risk        string
+	Questions   []string
+	Assumptions []string
+	Acceptance  []string
 }
 
 func parseIntake(text string) intakeVerdict {
 	verdict := intakeVerdict{}
 	section := ""
+	currentSection := ""
+	currentIndex := -1
 	for _, rawLine := range strings.Split(text, "\n") {
 		line := strings.TrimSpace(rawLine)
 		upper := strings.ToUpper(line)
 		if strings.HasPrefix(upper, "DECISION:") {
 			verdict.Decision = cleanDecision(strings.TrimSpace(line[len("DECISION:"):]))
+			currentSection = ""
+			currentIndex = -1
 			continue
 		}
 		if strings.HasPrefix(upper, "RISK:") {
 			verdict.Risk = cleanDecision(strings.TrimSpace(line[len("RISK:"):]))
+			currentSection = ""
+			currentIndex = -1
 			continue
 		}
 		if strings.HasPrefix(line, "##") {
@@ -398,11 +405,15 @@ func parseIntake(text string) intakeVerdict {
 			switch {
 			case strings.Contains(heading, "perguntas"):
 				section = "questions"
+			case strings.Contains(heading, "decis") && strings.Contains(heading, "assum"):
+				section = "assumptions"
 			case strings.Contains(heading, "crit") && strings.Contains(heading, "rio"):
 				section = "acceptance"
 			default:
 				section = ""
 			}
+			currentSection = ""
+			currentIndex = -1
 			continue
 		}
 		if section == "" {
@@ -415,14 +426,46 @@ func parseIntake(text string) intakeVerdict {
 		case strings.HasPrefix(line, "* "):
 			item = strings.TrimSpace(line[2:])
 		}
-		if item == "" || isPlaceholderItem(item) {
+		if item != "" {
+			if isPlaceholderItem(item) {
+				currentSection = ""
+				currentIndex = -1
+				continue
+			}
+			switch section {
+			case "questions":
+				verdict.Questions = append(verdict.Questions, item)
+				currentIndex = len(verdict.Questions) - 1
+			case "assumptions":
+				verdict.Assumptions = append(verdict.Assumptions, item)
+				currentIndex = len(verdict.Assumptions) - 1
+			case "acceptance":
+				verdict.Acceptance = append(verdict.Acceptance, item)
+				currentIndex = len(verdict.Acceptance) - 1
+			}
+			currentSection = section
 			continue
 		}
-		if section == "questions" {
-			verdict.Questions = append(verdict.Questions, item)
-		} else {
-			verdict.Acceptance = append(verdict.Acceptance, item)
+		if line == "" || currentIndex < 0 || currentSection != section {
+			continue
 		}
+		switch currentSection {
+		case "questions":
+			verdict.Questions[currentIndex] += " " + line
+		case "assumptions":
+			verdict.Assumptions[currentIndex] += " " + line
+		case "acceptance":
+			verdict.Acceptance[currentIndex] += " " + line
+		}
+	}
+	for i := range verdict.Questions {
+		verdict.Questions[i] = strings.Join(strings.Fields(verdict.Questions[i]), " ")
+	}
+	for i := range verdict.Assumptions {
+		verdict.Assumptions[i] = strings.Join(strings.Fields(verdict.Assumptions[i]), " ")
+	}
+	for i := range verdict.Acceptance {
+		verdict.Acceptance[i] = strings.Join(strings.Fields(verdict.Acceptance[i]), " ")
 	}
 	return verdict
 }
@@ -466,12 +509,7 @@ func (p *Pipeline) writeQuestions(run *RunState, questions, reasons []string) {
 	p.writeWork(run, "questions.md", builder.String())
 }
 
-func (p *Pipeline) runIntakeStage(ctx context.Context, run *RunState, trace telemetry.Trace, budget float64, opts Options) error {
-	if err := p.runArtifactStage(ctx, run, trace, "intake", "intake.md", budget, ""); err != nil {
-		return err
-	}
-	verdict := parseIntake(p.readWork(run, "intake.md"))
-
+func (p *Pipeline) intakeBlockingReasons(run *RunState, verdict intakeVerdict) []string {
 	var reasons []string
 	description := strings.TrimSpace(run.Task.Description)
 	descriptionLength := len([]rune(description))
@@ -495,15 +533,52 @@ func (p *Pipeline) runIntakeStage(ctx context.Context, run *RunState, trace tele
 		} else {
 			reasons = append(reasons, "intake retornou DECISION: "+verdict.Decision)
 		}
+		if len(verdict.Questions) > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d pergunta(s) bloqueante(s) no intake", len(verdict.Questions)))
+		}
 	}
-	if len(verdict.Questions) > 0 {
-		reasons = append(reasons, fmt.Sprintf("%d pergunta(s) aberta(s) no intake", len(verdict.Questions)))
+	return reasons
+}
+
+func (p *Pipeline) writeAssumptions(run *RunState, items []string) {
+	filtered := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" || seen[item] {
+			continue
+		}
+		seen[item] = true
+		filtered = append(filtered, item)
 	}
+	if len(filtered) == 0 {
+		return
+	}
+	var builder strings.Builder
+	builder.WriteString("# Decisões assumidas e perguntas não bloqueantes\n\n")
+	for _, item := range filtered {
+		fmt.Fprintf(&builder, "- %s\n", item)
+	}
+	p.writeWork(run, "assumptions.md", builder.String())
+}
+
+func (p *Pipeline) runIntakeStage(ctx context.Context, run *RunState, trace telemetry.Trace, budget float64, opts Options) error {
+	if err := p.runArtifactStage(ctx, run, trace, "intake", "intake.md", budget, ""); err != nil {
+		return err
+	}
+	verdict := parseIntake(p.readWork(run, "intake.md"))
+	reasons := p.intakeBlockingReasons(run, verdict)
 	if len(reasons) > 0 {
-		p.writeQuestions(run, verdict.Questions, reasons)
+		blocking := verdict.Questions
+		if verdict.Decision == "READY" {
+			blocking = nil
+		}
+		p.writeQuestions(run, blocking, reasons)
+		p.writeAssumptions(run, append(append([]string{}, verdict.Assumptions...), verdict.Questions...))
 		p.mirror(run)
 		return fmt.Errorf("%w: %s", ErrNeedsInput, strings.Join(reasons, "; "))
 	}
+	p.writeAssumptions(run, append(append([]string{}, verdict.Assumptions...), verdict.Questions...))
 
 	risky := p.riskyLabels(run.Task.Labels)
 	riskHigh := strings.EqualFold(verdict.Risk, "HIGH") || len(risky) > 0
