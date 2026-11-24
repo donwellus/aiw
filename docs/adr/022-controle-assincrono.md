@@ -1,6 +1,6 @@
 # ADR 022 — Controle assíncrono do coordenador
 
-- Status: aceito
+- Status: aceito; cancel/needs_input ampliados pelo ADR-023
 - Data: 2026-11-22
 
 ## Contexto

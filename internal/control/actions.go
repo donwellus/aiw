@@ -183,3 +183,143 @@ func ValidateRunID(id string) error {
 	}
 	return nil
 }
+
+type CancelResult struct {
+	RunID    string `json:"run_id"`
+	Status   string `json:"status"`
+	Canceled bool   `json:"canceled"`
+	Message  string `json:"message"`
+}
+
+func Cancel(ctx context.Context, cfg *config.Config, store *state.Store, runID string) (CancelResult, error) {
+	if err := ValidateRunID(runID); err != nil {
+		return CancelResult{}, err
+	}
+	run, err := pipeline.LoadRun(cfg, runID)
+	if err != nil {
+		return CancelResult{}, err
+	}
+	result := CancelResult{RunID: run.ID, Status: run.Status}
+	if IsTerminalStatus(run.Status) {
+		return result, fmt.Errorf("run %s já foi encerrada com status %s", run.ID, run.Status)
+	}
+	marker := filepath.Join(cfg.RunsDir(), run.ID, pipeline.CancelMarker)
+	if run.Status == "running" {
+		if _, found := store.FindClaimByRunID(run.ID); found {
+			if err := writeMarker(marker); err != nil {
+				return result, err
+			}
+			result.Status = "canceling"
+			result.Message = "cancelamento solicitado; a run para no próximo boundary/tool call"
+			return result, nil
+		}
+	}
+	return finalizeCanceled(ctx, cfg, store, run)
+}
+
+func finalizeCanceled(ctx context.Context, cfg *config.Config, store *state.Store, run *pipeline.RunState) (CancelResult, error) {
+	result := CancelResult{RunID: run.ID, Status: "canceled", Canceled: true, Message: "run cancelada"}
+	_ = os.Remove(filepath.Join(cfg.RunsDir(), run.ID, pipeline.PauseMarker))
+	_ = os.Remove(filepath.Join(cfg.RunsDir(), run.ID, pipeline.CancelMarker))
+	run.Status = "canceled"
+	run.Error = "cancelada"
+	if err := pipeline.SaveRun(cfg, run); err != nil {
+		return result, err
+	}
+	if record, found := store.FindByRunID(run.ID); found {
+		record.Status = "todo"
+		if err := store.Put(record); err != nil {
+			return result, err
+		}
+	}
+	if _, found, err := store.ReleaseClaimByRunID(run.ID); err != nil {
+		return result, err
+	} else if found {
+		result.Message += "; claim liberado"
+	}
+	src, err := sources.NewRegistry(cfg).Open(run.Source)
+	if err != nil {
+		result.Message += "; aviso: fonte indisponível para devolver tarefa"
+		return result, nil
+	}
+	if pending, ok := src.(source.PendingWriter); ok {
+		if err := pending.MarkPending(ctx, run.Ref); err != nil {
+			result.Message += "; aviso: falha ao devolver tarefa ao inbox"
+		} else {
+			result.Message += "; tarefa devolvida ao inbox"
+		}
+	}
+	return result, nil
+}
+
+func writeMarker(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339Nano)+"\n"), 0o644)
+}
+
+type AnswerResult struct {
+	RunID       string `json:"run_id"`
+	Source      string `json:"source,omitempty"`
+	Answered    bool   `json:"answered"`
+	OperationID string `json:"operation_id,omitempty"`
+	Warning     string `json:"warning,omitempty"`
+	Message     string `json:"message"`
+}
+
+func Answer(ctx context.Context, cfg *config.Config, runID, text string) (AnswerResult, error) {
+	if err := ValidateRunID(runID); err != nil {
+		return AnswerResult{}, err
+	}
+	if text = strings.TrimSpace(text); text == "" {
+		return AnswerResult{}, errors.New("resposta vazia")
+	}
+	run, err := pipeline.LoadRun(cfg, runID)
+	if err != nil {
+		return AnswerResult{}, err
+	}
+	result := AnswerResult{RunID: run.ID, Source: run.Source}
+	if run.Status != "needs_input" {
+		return result, fmt.Errorf("run %s não está aguardando input (status %s)", run.ID, run.Status)
+	}
+	src, err := sources.NewRegistry(cfg).Open(run.Source)
+	if err != nil {
+		return result, err
+	}
+	commenter, ok := src.(source.Commenter)
+	if !ok {
+		return result, fmt.Errorf("fonte %s não suporta respostas inline", run.Source)
+	}
+	body := "## Resposta do usuário\n\n" + text + "\n"
+	if err := commenter.Comment(ctx, run.Ref, body); err != nil {
+		return result, fmt.Errorf("registrando resposta na fonte: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.RunsDir(), run.ID), 0o755); err != nil {
+		result.Warning = "resposta publicada, mas answer.md não foi gravado: " + err.Error()
+	} else if err := os.WriteFile(filepath.Join(cfg.RunsDir(), run.ID, "answer.md"), []byte(body), 0o644); err != nil {
+		result.Warning = "resposta publicada, mas answer.md não foi gravado: " + err.Error()
+	}
+	result.Answered = true
+	result.Message = "resposta publicada na fonte"
+	ops, err := OpenOperationStore(cfg)
+	if err != nil {
+		result.Warning = appendWarning(result.Warning, "fila de rerun indisponível: "+err.Error())
+		return result, nil
+	}
+	operation, err := ops.Enqueue(ActionRerun, run.ID, map[string]any{"answer": true})
+	if err != nil {
+		result.Warning = appendWarning(result.Warning, "rerun não enfileirado: "+err.Error())
+		return result, nil
+	}
+	result.OperationID = operation.ID
+	result.Message += "; rerun enfileirado"
+	return result, nil
+}
+
+func appendWarning(current, warning string) string {
+	if current == "" {
+		return warning
+	}
+	return current + "; " + warning
+}

@@ -97,6 +97,15 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": readOnly,
 		},
 		{
+			"name":        "questions",
+			"title":       "Perguntas da run",
+			"description": "Lê questions.md e intake.md de uma run que precisa de input.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string"},
+			}, "run_id"),
+			"annotations": readOnly,
+		},
+		{
 			"name":        "clean_preview",
 			"title":       "Prévia de limpeza",
 			"description": "Mostra o que o aiw clean removeria, sem alterar nada.",
@@ -155,6 +164,25 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"description": "Remove worktrees/branches elegíveis. Exige confirm=true e confirmação no OpenCode.",
 			"inputSchema": cleanSchema(true),
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
+		},
+		map[string]any{
+			"name":        "cancel",
+			"title":       "Cancelar run",
+			"description": "Cancela uma run em andamento ou uma run pausada/needs_input.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string"},
+			}, "run_id"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
+		},
+		map[string]any{
+			"name":        "answer",
+			"title":       "Responder needs_input",
+			"description": "Publica a resposta na fonte e enfileira um rerun no daemon.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string"},
+				"text":   map[string]any{"type": "string", "description": "Resposta fornecida pelo humano"},
+			}, "run_id", "text"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
 		},
 		map[string]any{
 			"name":        "operation_cancel",
@@ -218,6 +246,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolEvents(ctx, params.Arguments)
 	case "daemon_status":
 		return s.toolDaemonStatus()
+	case "questions":
+		return s.toolQuestions(params.Arguments)
 	case "operations":
 		return s.toolOperations(params.Arguments)
 	case "operation_show":
@@ -226,10 +256,14 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolClean(ctx, params.Arguments, false)
 	case "pause":
 		return s.toolPause(params.Arguments)
+	case "cancel":
+		return s.toolCancel(ctx, params.Arguments)
 	case "resume":
 		return s.toolResume(params.Arguments)
 	case "approve":
 		return s.toolApprove(params.Arguments)
+	case "answer":
+		return s.toolAnswer(ctx, params.Arguments)
 	case "release":
 		return s.toolRelease(ctx, params.Arguments)
 	case "clean_apply":
@@ -243,7 +277,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel":
+	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer":
 		return true
 	default:
 		return false
@@ -318,6 +352,83 @@ func (s *Server) toolOperationShow(raw json.RawMessage) (any, *rpcError) {
 		return toolError(err.Error()), nil
 	}
 	return result, nil
+}
+
+func (s *Server) toolQuestions(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if !validRunID(args.RunID) {
+		return nil, invalidParams(errors.New("run_id inválido"))
+	}
+	dir := filepath.Join(s.cfg.RunsDir(), args.RunID)
+	value := map[string]any{"run_id": args.RunID}
+	found := false
+	for _, name := range []string{"questions.md", "intake.md", "answer.md"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return toolError(err.Error()), nil
+		}
+		value[strings.TrimSuffix(name, ".md")] = string(data)
+		found = true
+	}
+	if !found {
+		return toolError("nenhum questions.md/intake.md encontrado para a run"), nil
+	}
+	result, err := toolResult(value)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return result, nil
+}
+
+func (s *Server) toolCancel(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := control.Cancel(ctx, s.cfg, s.store, args.RunID)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolAnswer(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+		Text  string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := control.Answer(ctx, s.cfg, args.RunID, args.Text)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
 }
 
 func (s *Server) toolPause(raw json.RawMessage) (any, *rpcError) {

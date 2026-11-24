@@ -211,6 +211,29 @@ func (d *Driver) Release(ctx context.Context, ref source.Ref) error {
 	return d.MarkPending(ctx, ref)
 }
 
+func (d *Driver) Comment(ctx context.Context, ref source.Ref, body string) error {
+	if !d.cfg.WriteBackEnabled() {
+		return nil
+	}
+	path, err := d.locate(ref)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		return errors.New("tarefa não encontrada para comentário")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += "\n" + strings.TrimSpace(body) + "\n"
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
 func (d *Driver) locate(ref source.Ref) (string, error) {
 	if ref.URL != "" {
 		if _, err := os.Stat(ref.URL); err == nil {

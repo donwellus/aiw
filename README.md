@@ -152,6 +152,7 @@ aiw resume <run-id>
 | `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
 | `aiw clean [--dry-run] [--force] [--keep-branches] [--skip-superseded] [--json]` | remove worktrees e branches de runs terminais/superadas |
 | `aiw mcp [--allow-write]` | servidor MCP stdio para o coordenador |
+| `aiw cancel <run-id>` | cancela uma run em andamento/pausada/needs_input |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
 | `aiw resume <run-id>` | retoma execução pausada/falha |
 | `aiw resume --all` | remove a pausa global e retoma runs paused/canceladas |
@@ -230,16 +231,18 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
   `shell` e `subagent`.
 - Leitura: `aiw_status`, `aiw_report`, `aiw_runs`, `aiw_run_show`, `aiw_events`,
   `aiw_daemon_status`, `aiw_operations`, `aiw_clean_preview`.
-- Controle: pause, resume assíncrono, approve, release e clean. `release` e
-  `clean_apply` pedem confirmação; `clean_apply` também exige `confirm=true`.
+- Controle: pause, resume assíncrono, cancel, answer, approve, release e clean.
+  `release` e `clean_apply` pedem confirmação; `clean_apply` também exige
+  `confirm=true`.
 - `resume` retorna um `operation_id`; o daemon executa em background para o
   coordenador continuar disponível.
+- `needs_input`: o coordenador lê as perguntas com `aiw_questions`, publica a
+  resposta com `aiw_answer` e enfileira um rerun.
 - Workers continuam sendo runs do pipeline em worktrees isolados; o coordenador
   nunca trabalha nas tarefas.
 - Setup e exemplo de agente: [docs/coordinator.md](docs/coordinator.md) e
   [examples/opencode](examples/opencode).
-- Ainda não expostos: cancelar run em andamento, needs_input inline, prioridade
-  e notificações proativas.
+- Ainda não expostos: prioridade/hold, dependências e notificações proativas.
 
 ### Paralelismo (`aiw work`)
 
@@ -356,7 +359,7 @@ aiw resume <run-id>          # retoma pausa/gate/cancelamento
 - **DoR**: descrição mínima, critérios de aceite (do source ou propostos no intake) e perguntas abertas.
 - O agente de intake grava `intake.md` e `questions.md` e termina com `DECISION: READY|NEEDS_INPUT` e `RISK: LOW|MEDIUM|HIGH`.
 - **Política**: `needs_input` para tarefa incompleta; risco alto ou labels como `risk:high`, `security`, `db-migration` escalam para humano; caso contrário segue automático.
-- `needs_input` não é falha: a tarefa fica no inbox, o claim é liberado e o estado aparece em `aiw list --status needs_input`. Edite a tarefa na fonte (o hash muda) e rode novamente.
+- `needs_input` não é falha: a tarefa fica no inbox, o claim é liberado e o estado aparece em `aiw list --status needs_input`. Edite a tarefa na fonte (o hash muda) e rode novamente, ou use `aiw_answer` pelo coordenador: ele lê as perguntas, publica a resposta na fonte e enfileira um rerun.
 - **Spec/plan**: validadores com contexto limpo, até `max_gate_rounds` tentativas de correção. Se continuar reprovando, o gate escala para humano (`aiw approve` + `aiw resume`).
 - `--auto` aprova gates humanos (inclusive risco no intake); falhas de validação automática após `max_gate_rounds` continuam escalando para revisão.
 
@@ -708,9 +711,9 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - Evals cobrem pipeline + verify + judge opcional + similaridade de referência; execução paralela de casos ainda não.
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
-- `needs_input` exige editar a tarefa e iniciar uma nova run; não há comando de resposta inline ainda.
+- Resposta inline de `needs_input` existe via MCP/coordenador; ainda não há comando CLI dedicado `aiw answer`.
+- Prioridade/hold, dependências e notificações proativas ainda não estão expostos ao coordenador.
 - Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).
 - Daemon processa uma máquina/clone por vez; claim entre máquinas depende de `doing`/fonte compartilhada ou conector remoto.
 - Worktrees/branches não são removidos automaticamente após a entrega; use `aiw clean` (branches remotas/PRs não são apagadas).
 - O coordenador requer OpenCode; o `resume` assíncrono exige daemon ativo. Sem daemon, ele ainda consulta estado e executa ações síncronas.
-- Cancelar run em andamento, responder needs_input e notificações proativas ainda não estão expostos ao coordenador.

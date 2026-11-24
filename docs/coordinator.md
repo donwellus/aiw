@@ -90,6 +90,7 @@ Leitura:
 | `aiw_operations` | operações assíncronas |
 | `aiw_operation_show` | detalhe/resultado de operação |
 | `aiw_clean_preview` | prévia do clean |
+| `aiw_questions` | perguntas/intake de uma run needs_input |
 
 Controle:
 
@@ -101,6 +102,8 @@ Controle:
 | `aiw_release` | libera claim/estado — confirmação no OpenCode |
 | `aiw_clean_apply` | exige `confirm=true` + confirmação no OpenCode |
 | `aiw_operation_cancel` | cancela operação pendente/em execução |
+| `aiw_cancel` | cancela run em andamento, pausada ou needs_input |
+| `aiw_answer` | publica resposta na fonte e enfileira rerun |
 
 `resume` não bloqueia: o daemon executa e o coordenador acompanha:
 
@@ -136,6 +139,20 @@ Você: e o que falhou?
 Coordenador:
   [aiw_runs {status: "failed"}]
   ...
+
+Você: a tarefa X está needs_input. Responda: "use SQLite com OPFS".
+
+Coordenador:
+  [aiw_questions {run_id: "X"}]
+  A pergunta é sobre a persistência. Vou publicar sua resposta.
+  [aiw_answer {run_id: "X", text: "use SQLite com OPFS"}]
+  Resposta publicada; rerun op-... enfileirado.
+
+Você: cancela a run Y.
+
+Coordenador:
+  [aiw_cancel {run_id: "Y"}]
+  Cancelamento solicitado; a tarefa será devolvida ao inbox.
 ```
 
 ## Segurança
@@ -149,8 +166,6 @@ Coordenador:
 
 ## Limitações atuais
 
-- Cancelar uma run em andamento ainda não está exposto; use pausa + resume.
-- Responder `needs_input` inline ainda não existe.
 - Sem prioridade/hold por issue e sem dependências (issue #6).
 - Sem notificações proativas.
 - Operações `running` órfãs após crash do daemon exigem recuperação manual.

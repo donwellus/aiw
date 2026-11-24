@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -118,6 +119,15 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 	if runID == "" {
 		runID = r.pipe.NewRunID(req.Task)
 	}
+	runCtx, stopCancel := r.watchCancel(ctx, runID)
+	defer stopCancel()
+	defer os.Remove(r.cancelMarkerPath(runID))
+	if runCtx.Err() != nil {
+		out.RunID = runID
+		out.Status = "canceled"
+		out.Reason = "cancelada"
+		return out
+	}
 	claim, acquired, err := r.store.ClaimByKey(source.IdentityKey(req.Ref, req.Task), req.Task.Source, req.Task.ExternalID, runID, r.cfg.Defaults.ClaimTTL.Std())
 	if err != nil {
 		out.Status = "failed"
@@ -160,7 +170,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		if opened, err := r.pipe.Sources.Open(req.Task.Source); err == nil {
 			src = opened
 			if writer, ok := src.(source.StatusWriter); ok {
-				if err := writer.MarkRunning(ctx, req.Ref, runID); err != nil {
+				if err := writer.MarkRunning(runCtx, req.Ref, runID); err != nil {
 					r.pipe.Log.Warn("falha ao marcar tarefa em execução na fonte", "task", req.Task.ExternalID, "error", err)
 				}
 			}
@@ -171,7 +181,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 
 	pipe := r.pipe.WithLogger(r.pipe.Log.With("task", req.Task.ExternalID, "run_id", runID))
 	req.Options.RunID = runID
-	result, runErr := pipe.Run(ctx, req.Task, req.Ref, req.Repo, req.Options)
+	result, runErr := pipe.Run(runCtx, req.Task, req.Ref, req.Repo, req.Options)
 	if result != nil {
 		out.RunID = result.RunID
 		out.Stage = result.Stage
@@ -196,7 +206,7 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		out.Reason = runErr.Error()
 	case errors.Is(runErr, pipeline.ErrNeedsInput):
 		out.Status = "needs_input"
-	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+	case errors.Is(runErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled):
 		out.Status = "canceled"
 	default:
 		out.Status = "failed"
@@ -272,6 +282,10 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		out.Reason = "run já concluída"
 		return out, nil
 	}
+	_ = os.Remove(r.cancelMarkerPath(run.ID))
+	runCtx, stopCancel := r.watchCancel(ctx, run.ID)
+	defer stopCancel()
+	defer os.Remove(r.cancelMarkerPath(run.ID))
 	claimKey := source.IdentityKey(run.Ref, &run.Task)
 	claim, acquired, err := r.store.ClaimByKey(claimKey, run.Task.Source, run.Task.ExternalID, run.ID, r.cfg.Defaults.ClaimTTL.Std())
 	if err != nil {
@@ -309,14 +323,14 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		if opened, err := r.pipe.Sources.Open(run.Task.Source); err == nil {
 			src = opened
 			if writer, ok := src.(source.StatusWriter); ok {
-				if err := writer.MarkRunning(ctx, run.Ref, run.ID); err != nil {
+				if err := writer.MarkRunning(runCtx, run.Ref, run.ID); err != nil {
 					r.pipe.Log.Warn("falha ao marcar tarefa em execução na fonte", "task", run.Task.ExternalID, "error", err)
 				}
 			}
 		}
 	}
 	pipe := r.pipe.WithLogger(r.pipe.Log.With("task", run.Task.ExternalID, "run_id", run.ID))
-	result, runErr := pipe.Resume(ctx, runID, opts)
+	result, runErr := pipe.Resume(runCtx, runID, opts)
 	if result != nil {
 		out.RunID = result.RunID
 		out.Stage = result.Stage
@@ -340,7 +354,7 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		out.Reason = runErr.Error()
 	case errors.Is(runErr, pipeline.ErrNeedsInput):
 		out.Status = "needs_input"
-	case errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+	case errors.Is(runErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled):
 		out.Status = "canceled"
 	default:
 		out.Status = "failed"
@@ -386,6 +400,47 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		}
 	}
 	return out, runErr
+}
+
+func (r *Runner) watchCancel(ctx context.Context, runID string) (context.Context, func()) {
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	marker := r.cancelMarkerPath(runID)
+	check := func() bool {
+		_, err := os.Stat(marker)
+		return err == nil
+	}
+	if check() {
+		cancel()
+	}
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				if check() {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return runCtx, func() {
+		once.Do(func() {
+			close(done)
+			cancel()
+		})
+	}
+}
+
+func (r *Runner) cancelMarkerPath(runID string) string {
+	return filepath.Join(r.cfg.RunsDir(), runID, pipeline.CancelMarker)
 }
 
 func (r *Runner) Work(ctx context.Context, jobs []Job, workers int, drain <-chan struct{}, onOutcome func(Outcome)) []Outcome {

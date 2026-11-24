@@ -33,6 +33,7 @@ var (
 )
 
 const PauseMarker = "PAUSE"
+const CancelMarker = "CANCEL"
 
 type Options struct {
 	RunID            string
@@ -144,6 +145,7 @@ func (p *Pipeline) Resume(ctx context.Context, runID string, opts Options) (*Res
 		return nil, fmt.Errorf("run %s aguarda input; edite a tarefa na fonte e execute novamente", runID)
 	}
 	_ = os.Remove(filepath.Join(dir, PauseMarker))
+	_ = os.Remove(filepath.Join(dir, CancelMarker))
 	if _, err := os.Stat(run.Worktree); err != nil {
 		return nil, fmt.Errorf("worktree %s não encontrada: %w", run.Worktree, err)
 	}
@@ -276,6 +278,9 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			st.EndedAt = time.Now().UTC()
 			p.save(run, dir)
 			continue
+		}
+		if p.cancelRequested(dir) {
+			return context.Canceled
 		}
 		if p.pauseRequested(dir) {
 			return ErrPauseRequested
@@ -1145,6 +1150,11 @@ func (p *Pipeline) writeBack(ctx context.Context, run *RunState, runErr error, o
 		return
 	}
 	appendEvent(dir, "writeback.done", map[string]any{"success": runErr == nil})
+}
+
+func (p *Pipeline) cancelRequested(runDir string) bool {
+	_, err := os.Stat(filepath.Join(runDir, CancelMarker))
+	return err == nil
 }
 
 func (p *Pipeline) pauseRequested(runDir string) bool {

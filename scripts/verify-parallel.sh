@@ -963,6 +963,135 @@ set -e
 assert_eq "$DAEMON_CODE" 0 "daemon encerrado após resume all"
 pass "coordenador: resume all assíncrono"
 
+# 13) Coordenador: cancelar run em andamento.
+DIR="$WORK/coordinator-cancel"
+new_project "$DIR"
+write_task "$DIR" "cancel-a" "Tarefa para cancelar"
+export AIW_SLOW_SECONDS=0.6
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log" &
+WORK_PID=$!
+RUN_ID=""
+for i in $(seq 1 100); do
+  RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+for path in (pathlib.Path(sys.argv[1]) / ".aiw/runs").glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "running":
+        print(data["id"])
+        break
+PYRUN
+)
+  [ -n "$RUN_ID" ] && break
+  sleep 0.1
+done
+[ -n "$RUN_ID" ] || fail "run não iniciou para cancelamento"
+cat > "$DIR/mcp-in.jsonl" <<MCPIN
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cancel","arguments":{"run_id":"$RUN_ID"}}}
+MCPIN
+"$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
+python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = {str(item["id"]): item for item in map(json.loads, open(sys.argv[1])) if "id" in item}
+result = responses["2"]["result"]["structuredContent"]
+assert result["status"] in ("canceling", "canceled"), result
+PYMCP
+set +e
+wait "$WORK_PID"
+WORK_CODE=$?
+set -e
+assert_eq "$WORK_CODE" 1 "work encerrado após cancelamento"
+STATUS=$(python3 - "$DIR" "$RUN_ID" <<'PYSTATUS'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1]) / ".aiw/runs" / sys.argv[2] / "run.json"
+print(json.loads(path.read_text())["status"])
+PYSTATUS
+)
+INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$STATUS" "canceled" "run cancelada"
+assert_eq "$INBOX" 1 "tarefa cancelada voltou ao inbox"
+assert_eq "$CLAIMS" 0 "claims após cancelamento"
+pass "coordenador: cancelamento cooperativo"
+
+# 14) Coordenador: needs_input, questions e answer com rerun.
+DIR="$WORK/coordinator-answer"
+new_project "$DIR"
+cat > "$DIR/tasks/answer.md" <<'TASK'
+---
+id: answer
+title: Tarefa com resposta inline
+repo: .
+labels: [aiw]
+acceptance:
+  - O pipeline conclui a tarefa.
+---
+curta
+TASK
+export AIW_SLOW_SECONDS=0.05
+"$AIW" --root "$DIR" work --workers 1 --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log"
+NEEDS=$(grep -c '"status":"needs_input"' "$DIR/out.jsonl" || true)
+assert_eq "$NEEDS" 1 "run needs_input para answer"
+RUN_ID=$(python3 - "$DIR" <<'PYRUN'
+import json
+import pathlib
+import sys
+for path in (pathlib.Path(sys.argv[1]) / ".aiw/runs").glob("*/run.json"):
+    data = json.loads(path.read_text())
+    if data.get("status") == "needs_input":
+        print(data["id"])
+        break
+PYRUN
+)
+[ -n "$RUN_ID" ] || fail "run needs_input não encontrada"
+"$AIW" --root "$DIR" daemon --workers 1 --interval 100ms >"$DIR/daemon.log" 2>"$DIR/daemon.err" &
+DAEMON_PID=$!
+for i in $(seq 1 100); do
+  [ -f "$DIR/.aiw/daemon.json" ] && break
+  sleep 0.1
+done
+[ -f "$DIR/.aiw/daemon.json" ] || fail "daemon não publicou heartbeat para answer"
+cat > "$DIR/mcp-in.jsonl" <<MCPIN
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"questions","arguments":{"run_id":"$RUN_ID"}}}
+{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"answer","arguments":{"run_id":"$RUN_ID","text":"Use SQLite local com OPFS e mantenha o escopo pequeno. Aceite: build e testes passam."}}}
+MCPIN
+"$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
+python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = {str(item["id"]): item for item in map(json.loads, open(sys.argv[1])) if "id" in item}
+questions = responses["2"]["result"]["structuredContent"]
+assert "questions" in questions or "intake" in questions, questions
+answer = responses["3"]["result"]["structuredContent"]
+assert answer["answered"] is True, answer
+assert answer["operation_id"], answer
+PYMCP
+for i in $(seq 1 150); do
+  DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+  [ "$DONE" = "1" ] && break
+  sleep 0.1
+done
+DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
+CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
+assert_eq "$DONE" 1 "tarefa concluída após answer/rerun"
+assert_eq "$CLAIMS" 0 "claims após answer/rerun"
+grep -q "Resposta do usuário" "$DIR/tasks/done/answer.md" || fail "resposta não foi anexada à tarefa"
+kill -INT "$DAEMON_PID"
+set +e
+wait "$DAEMON_PID"
+DAEMON_CODE=$?
+set -e
+assert_eq "$DAEMON_CODE" 0 "daemon encerrado após answer"
+pass "coordenador: questions, answer e rerun"
+
 # 10) MCP read-only: handshake, tools/list e status.
 DIR="$WORK/mcp"
 new_project "$DIR"
@@ -987,7 +1116,7 @@ assert "1" in by_id, responses
 assert by_id["1"]["result"]["serverInfo"]["name"] == "aiw", by_id["1"]
 tools = {tool["name"] for tool in by_id["2"]["result"]["tools"]}
 assert {"status", "report", "runs", "run_show", "events"} <= tools, tools
-for forbidden in ("pause", "resume", "approve", "release", "clean", "clean_apply", "cancel"):
+for forbidden in ("pause", "resume", "approve", "release", "clean", "clean_apply", "cancel", "answer"):
     assert forbidden not in tools, tools
 status = by_id["3"]["result"]["structuredContent"]
 assert status["summary"]["tasks"] >= 1, status

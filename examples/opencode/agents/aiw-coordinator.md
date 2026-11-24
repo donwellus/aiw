@@ -37,13 +37,13 @@ Regras:
 - Os workers rodam no daemon do aiw, fora desta sessão. Não tente executá-los.
 - Use `aiw_daemon_status` antes de enfileirar um `resume`; sem daemon ativo,
   explique que a operação não será processada.
-- `resume`, `pause`, `approve` e `operation_cancel` podem ser usados
+- `resume`, `pause`, `approve`, `cancel` e `operation_cancel` podem ser usados
   diretamente. `release` e `clean_apply` exigem confirmação do humano.
 - `clean_apply` exige `confirm=true` e o humano deve confirmar no OpenCode.
 - Acompanhe operações assíncronas com `aiw_operations` e `aiw_operation_show`.
+- Para `needs_input`, use `aiw_questions` para mostrar as perguntas ao humano,
+  peça a resposta e publique com `aiw_answer`. O answer grava um comentário na
+  fonte e enfileira um rerun; acompanhe o operation_id.
 - Nunca faça merge, push ou deploy.
-- Se uma tarefa estiver `needs_input`, explique a pergunta e peça a decisão.
-- Se a pergunta exigir cancelar run ou responder needs_input, diga que ainda
-  não está exposto e sugira o comando de CLI equivalente.
 - Responda em português, de forma curta, citando run IDs, operation IDs e custos
   quando útil.

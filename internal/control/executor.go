@@ -10,6 +10,7 @@ import (
 	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/runner"
+	"github.com/donwellus/aiw/internal/sources"
 	"github.com/donwellus/aiw/internal/state"
 )
 
@@ -104,6 +105,8 @@ func (e *Executor) runOperation(ctx context.Context, operation *Operation) (map[
 		return e.runResume(ctx, operation)
 	case ActionResumeAll:
 		return e.runResumeAll(ctx, operation)
+	case ActionRerun:
+		return e.runRerun(ctx, operation)
 	default:
 		return nil, errors.New("ação de operação desconhecida: " + operation.Action)
 	}
@@ -142,6 +145,39 @@ func (e *Executor) runResumeAll(ctx context.Context, operation *Operation) (map[
 		"count":         len(results),
 		"runs":          results,
 	}, nil
+}
+
+func (e *Executor) runRerun(ctx context.Context, operation *Operation) (map[string]any, error) {
+	if err := ValidateRunID(operation.RunID); err != nil {
+		return map[string]any{"run_id": operation.RunID}, err
+	}
+	run, err := pipeline.LoadRun(e.cfg, operation.RunID)
+	if err != nil {
+		return nil, err
+	}
+	src, err := sources.NewRegistry(e.cfg).Open(run.Source)
+	if err != nil {
+		return nil, err
+	}
+	task, err := src.Fetch(ctx, run.Ref)
+	if err != nil {
+		return nil, err
+	}
+	outcome := e.runner.Execute(ctx, runner.Request{
+		Task:    task,
+		Ref:     run.Ref,
+		Repo:    run.Repo,
+		Options: operationOptions(operation.Args),
+	})
+	runErr := outcome.Err
+	result := outcomeResult(outcome, runErr)
+	if ctx.Err() != nil {
+		return result, ctx.Err()
+	}
+	if outcome.RunID == "" && runErr != nil {
+		return result, runErr
+	}
+	return result, nil
 }
 
 func operationOptions(args map[string]any) pipeline.Options {

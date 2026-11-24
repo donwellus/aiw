@@ -44,6 +44,7 @@ func NewRoot() *cobra.Command {
 		newWorkCommand(opts),
 		newDaemonCommand(opts),
 		newPauseCommand(opts),
+		newCancelCommand(opts),
 		newEvalCommand(opts),
 		newReleaseCommand(opts),
 		newIntakeCommand(opts),
