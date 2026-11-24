@@ -340,3 +340,28 @@ func TestIntakeRiskyLabelWithAutoApprove(t *testing.T) {
 		t.Fatalf("status = %q", res.Status)
 	}
 }
+
+func TestPRBodyClosesGitHubIssueOnMerge(t *testing.T) {
+	cfg := &config.Config{Sources: map[string]config.SourceConfig{
+		"github": {Driver: "github"},
+		"folder": {Driver: "folder"},
+	}}
+	p := &Pipeline{Cfg: cfg}
+	githubRun := &RunState{
+		ID:     "run-1",
+		Source: "github",
+		Task:   source.Task{Source: "github", ExternalID: "6", Title: "Issue 6"},
+	}
+	body := p.prBody(githubRun, "# Spec\n")
+	if !strings.Contains(body, "Closes #6") {
+		t.Fatalf("PR body sem closing keyword:\n%s", body)
+	}
+	folderRun := &RunState{
+		ID:     "run-2",
+		Source: "folder",
+		Task:   source.Task{Source: "folder", ExternalID: "6", Title: "Folder 6"},
+	}
+	if body := p.prBody(folderRun, "# Spec\n"); strings.Contains(body, "Closes #") {
+		t.Fatalf("fonte folder não deveria fechar issue:\n%s", body)
+	}
+}

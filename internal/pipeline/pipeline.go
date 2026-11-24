@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 	"time"
@@ -867,8 +868,7 @@ func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Wor
 	}
 	base := worktree.DefaultBranch(ctx, run.Repo)
 	title := fmt.Sprintf("aiw: %s", run.Task.Title)
-	body := fmt.Sprintf("## Tarefa\n\n%s (%s)\n\n## Run\n\n- id: %s\n- branch: %s\n- custo: US$ %.2f\n\n## Spec\n\n%s\n",
-		run.Task.Title, run.Task.ExternalID, run.ID, run.Branch, run.Usage.CostUSD, truncateForPrompt(p.readWork(run, "spec.md"), 8000))
+	body := p.prBody(run, p.readWork(run, "spec.md"))
 
 	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--title", title, "--body", body, "--base", base, "--head", run.Branch)
 	cmd.Dir = run.Worktree
@@ -882,6 +882,31 @@ func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Wor
 	p.writeWork(run, "pr.md", run.PRURL+"\n")
 	p.mirror(run)
 	return nil
+}
+
+func (p *Pipeline) prBody(run *RunState, spec string) string {
+	body := fmt.Sprintf("## Tarefa\n\n%s (%s)\n\n## Run\n\n- id: %s\n- branch: %s\n- custo: US$ %.2f\n\n## Spec\n\n%s\n",
+		run.Task.Title, run.Task.ExternalID, run.ID, run.Branch, run.Usage.CostUSD, truncateForPrompt(spec, 8000))
+	if closing := p.prClosingLine(run); closing != "" {
+		body += "\n" + closing + "\n"
+	}
+	return body
+}
+
+func (p *Pipeline) prClosingLine(run *RunState) string {
+	sourceName := run.Source
+	if sourceName == "" {
+		sourceName = run.Task.Source
+	}
+	sc, err := p.Cfg.SourceConfig(sourceName)
+	if err != nil || sc.Driver != "github" {
+		return ""
+	}
+	id := strings.TrimPrefix(strings.TrimSpace(run.Task.ExternalID), "#")
+	if _, err := strconv.Atoi(id); err != nil {
+		return ""
+	}
+	return "Closes #" + id
 }
 
 func (p *Pipeline) gate(ctx context.Context, run *RunState, name string, trace telemetry.Trace, autoApprove bool) error {

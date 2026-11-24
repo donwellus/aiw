@@ -17,6 +17,9 @@ O source `folder` cobre uso local, mas o fluxo real de desenvolvimento usa issue
 3. Write-back:
    - claim: adiciona `aiw:running`;
    - sucesso: `aiw:done`, remove running, comentário com run/branch/PR/custo, fecha issue se `close_on_done`;
+   - com `--pr`, o corpo do PR inclui `Closes #N`; a issue fecha no merge para a
+     branch padrão, não na abertura. Para esse fluxo, `close_on_done` deve ficar
+     `false`;
    - falha: `aiw:failed`, remove running, comentário com erro;
    - `needs_input`/cancelado: remove running;
    - labels configuráveis; labels são criadas com `gh label create --force` se necessário.
@@ -30,6 +33,7 @@ Positivas:
 
 - Issues reais entram no fluxo com contexto e critérios de aceite.
 - Write-back visível no GitHub sem servidor/daemon adicional.
+- Fechamento da issue acontece no merge do PR, alinhado ao fluxo de revisão.
 - Claim local (`slides`) + label remota dá visibilidade e reduz duplicidade.
 
 Negativas e riscos:

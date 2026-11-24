@@ -499,6 +499,7 @@ aiw daemon --source github --interval 60s
 - Lê issues via `gh` (precisa estar autenticado): título, corpo, labels, assignee e comentários entram no contexto.
 - Itens `- [ ]`/`- [x]` do corpo viram critérios de aceite.
 - Write-back: `aiw:running` no claim; `aiw:done`/`aiw:failed` ao final, com comentário de run/branch/PR/custo; opcional fechar a issue (`close_on_done`).
+- Com `--pr`, o PR de uma issue GitHub inclui `Closes #N`: a issue **só fecha quando o PR é mergeado na branch padrão**, não na abertura. Para esse fluxo, mantenha `close_on_done: false`.
 - `needs_input`/cancelamento removem `aiw:running` e liberam o claim.
 - `aiw release` remove `aiw:running` e devolve estado local para `todo`.
 - O repositório local é resolvido por `repo_path`, `repo:`/label `repo:*` ou `workspace.default_repo`.
