@@ -214,3 +214,55 @@ func TestMarkQueuedDoesNotOverwriteActiveRun(t *testing.T) {
 		t.Fatalf("running foi sobrescrito: %+v", record)
 	}
 }
+
+type fakePRSource struct {
+	task *source.Task
+	prs  []source.PullRequest
+}
+
+func (f fakePRSource) Name() string      { return "github" }
+func (f fakePRSource) Caps() source.Caps { return source.Caps{} }
+func (f fakePRSource) List(ctx context.Context, filter source.Filter) ([]source.Ref, error) {
+	return []source.Ref{{Source: "github", ID: f.task.ExternalID}}, nil
+}
+func (f fakePRSource) Fetch(ctx context.Context, ref source.Ref) (*source.Task, error) {
+	return f.task, nil
+}
+func (f fakePRSource) ListPullRequests(ctx context.Context) ([]source.PullRequest, error) {
+	return f.prs, nil
+}
+
+func TestCheckPROpen(t *testing.T) {
+	run, store := newTestRunner(t)
+	task := testTask("1")
+	task.Source = "github"
+	if err := store.Put(state.TaskRecord{Source: "github", ID: "1", Status: "pr_open", RunID: "run-pr"}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, skip := run.Check(task, false)
+	if !skip || outcome.Status != "pr_open" || outcome.RunID != "run-pr" {
+		t.Fatalf("outcome inesperado: %+v skip=%v", outcome, skip)
+	}
+}
+
+func TestCollectSkipsOpenPullRequest(t *testing.T) {
+	run, store := newTestRunner(t)
+	task := testTask("1")
+	task.Source = "github"
+	task.ClaimKey = "github:1"
+	src := fakePRSource{
+		task: task,
+		prs:  []source.PullRequest{{ExternalID: "10", URL: "https://github.com/o/r/pull/10", Branch: "aiw/run-10", TaskID: "1"}},
+	}
+	candidates, skips, err := run.Collect(context.Background(), src, source.Filter{}, "/tmp", false, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 0 || len(skips) != 1 || skips[0].Status != "pr_open" {
+		t.Fatalf("candidates=%+v skips=%+v", candidates, skips)
+	}
+	record, found := store.Get("github", "1")
+	if !found || record.Status != "pr_open" || record.RunID != "run-10" {
+		t.Fatalf("record = %+v found=%v", record, found)
+	}
+}

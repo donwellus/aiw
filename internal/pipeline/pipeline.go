@@ -28,9 +28,10 @@ import (
 )
 
 var (
-	ErrPaused         = errors.New("run pausada aguardando aprovação")
-	ErrNeedsInput     = errors.New("tarefa precisa de input antes de continuar")
-	ErrPauseRequested = errors.New("pausa solicitada")
+	ErrPaused          = errors.New("run pausada aguardando aprovação")
+	ErrNeedsInput      = errors.New("tarefa precisa de input antes de continuar")
+	ErrPauseRequested  = errors.New("pausa solicitada")
+	ErrDeliveryPending = errors.New("entrega pendente")
 )
 
 const PauseMarker = "PAUSE"
@@ -43,6 +44,7 @@ type Options struct {
 	BudgetUSD        float64
 	CreatePR         bool
 	DisableWriteBack bool
+	OnDelivery       func(*RunState) error
 }
 
 type Result struct {
@@ -53,6 +55,7 @@ type Result struct {
 	Worktree string
 	Branch   string
 	PRURL    string
+	PRMerged bool
 	Summary  string
 	Usage    engine.Usage
 }
@@ -213,12 +216,13 @@ func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options)
 			appendEvent(dir, "run.pause_requested", map[string]any{"stage": run.Stage})
 			return p.result(run, "pausada"), runErr
 		}
-		if errors.Is(runErr, ErrPaused) {
+		if errors.Is(runErr, ErrPaused) || errors.Is(runErr, ErrDeliveryPending) {
 			run.Status = "paused"
+			run.Error = ""
 			if err := saveRun(run, dir); err != nil {
 				p.Log.Warn("falha ao salvar run.json", "error", err)
 			}
-			appendEvent(dir, "run.paused", map[string]any{"stage": run.Stage})
+			appendEvent(dir, "run.paused", map[string]any{"stage": run.Stage, "delivery": errors.Is(runErr, ErrDeliveryPending)})
 			res := p.result(run, "pausada")
 			return res, runErr
 		}
@@ -320,6 +324,12 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 			st.EndedAt = time.Now().UTC()
 			if errors.Is(err, ErrPaused) {
 				st.Status = "gated"
+				p.save(run, dir)
+				return err
+			}
+			if errors.Is(err, ErrDeliveryPending) {
+				st.Status = "pending"
+				st.Error = err.Error()
 				p.save(run, dir)
 				return err
 			}
@@ -970,15 +980,20 @@ func (p *Pipeline) deliver(ctx context.Context, run *RunState, trace telemetry.T
 	}
 
 	if opts.CreatePR {
-		if err := p.createPR(ctx, run, wt); err != nil {
-			span.End(nil, err)
-			return err
+		if run.PRURL == "" {
+			if err := p.createPR(ctx, run, wt, opts); err != nil {
+				span.End(nil, err)
+				return err
+			}
 		}
 		if p.autoMerge() {
 			if err := p.awaitAndMergePR(ctx, run); err != nil {
 				span.End(nil, err)
 				return err
 			}
+		} else {
+			span.End(nil, nil)
+			return fmt.Errorf("%w: PR %s aberto; use aiw merge para mergear", ErrDeliveryPending, run.PRURL)
 		}
 	}
 
@@ -1031,16 +1046,16 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState) error {
 		}
 		ready, pending, reason := p.evaluatePRStatus(status)
 		if reason != "" {
-			return fmt.Errorf("%w: entrega bloqueada: %s", ErrPaused, reason)
+			return fmt.Errorf("%w: entrega bloqueada: %s", ErrDeliveryPending, reason)
 		}
 		if ready {
 			break
 		}
 		if !pending {
-			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrPaused)
+			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrDeliveryPending)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%w: timeout aguardando CI do PR %s", ErrPaused, run.PRURL)
+			return fmt.Errorf("%w: timeout aguardando CI do PR %s", ErrDeliveryPending, run.PRURL)
 		}
 		select {
 		case <-ctx.Done():
@@ -1065,13 +1080,13 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState) error {
 	}
 	ready, pending, reason := p.evaluatePRStatus(status)
 	if reason != "" {
-		return fmt.Errorf("%w: entrega bloqueada: %s", ErrPaused, reason)
+		return fmt.Errorf("%w: entrega bloqueada: %s", ErrDeliveryPending, reason)
 	}
 	if !ready {
 		if pending {
-			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrPaused)
+			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrDeliveryPending)
 		}
-		return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrPaused)
+		return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrDeliveryPending)
 	}
 	method := strings.ToLower(strings.TrimSpace(p.Cfg.Delivery.Method))
 	args := []string{"pr", "merge", run.PRURL}
@@ -1083,23 +1098,47 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState) error {
 	default:
 		args = append(args, "--squash")
 	}
+	workdir := run.Worktree
+	if _, err := os.Stat(workdir); err != nil {
+		workdir = run.Repo
+	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Dir = run.Worktree
+	cmd.Dir = workdir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		merged, _ := p.readPRStatus(ctx, run.PRURL)
 		if merged.State != "MERGED" {
-			return fmt.Errorf("%w: merge do PR: %v: %s", ErrPaused, err, strings.TrimSpace(stderr.String()))
+			return fmt.Errorf("%w: merge do PR: %v: %s", ErrDeliveryPending, err, strings.TrimSpace(stderr.String()))
 		}
 	}
+	now := time.Now().UTC()
 	run.PRMerged = true
-	run.MergedAt = time.Now().UTC()
+	run.MergedAt = now
+	if run.Delivery == nil {
+		run.Delivery = &DeliveryState{Provider: "github", Kind: "pull_request", ExternalID: prNumberFromURL(run.PRURL), URL: run.PRURL, Branch: run.Branch}
+	}
+	run.Delivery.Status = "merged"
+	run.Delivery.MergedAt = now
 	p.save(run, p.runDir(run))
 	appendEvent(p.runDir(run), "pr.merged", map[string]any{"pr_url": run.PRURL, "method": method})
 	p.mirror(run)
 	return nil
+}
+
+func (p *Pipeline) MergePR(ctx context.Context, runID string) error {
+	run, err := LoadRun(p.Cfg, runID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(run.PRURL) == "" {
+		return fmt.Errorf("run %s não tem PR", runID)
+	}
+	if run.PRMerged {
+		return nil
+	}
+	return p.awaitAndMergePR(ctx, run)
 }
 
 func (p *Pipeline) readPRStatus(ctx context.Context, prURL string) (prStatus, error) {
@@ -1197,7 +1236,7 @@ func checkFailed(check prCheck) bool {
 	return check.Status == "COMPLETED" && check.Conclusion != "SUCCESS" && check.Conclusion != "SKIPPED"
 }
 
-func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Worktree) error {
+func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Worktree, opts Options) error {
 	if err := wt.Push(ctx); err != nil {
 		return fmt.Errorf("push da branch %s: %w", run.Branch, err)
 	}
@@ -1214,9 +1253,32 @@ func (p *Pipeline) createPR(ctx context.Context, run *RunState, wt *worktree.Wor
 		return fmt.Errorf("gh pr create: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	run.PRURL = strings.TrimSpace(stdout.String())
+	run.Delivery = &DeliveryState{
+		Provider:   "github",
+		Kind:       "pull_request",
+		ExternalID: prNumberFromURL(run.PRURL),
+		URL:        run.PRURL,
+		Branch:     run.Branch,
+		Status:     "open",
+	}
 	p.writeWork(run, "pr.md", run.PRURL+"\n")
 	p.mirror(run)
+	p.save(run, p.runDir(run))
+	if opts.OnDelivery != nil {
+		if err := opts.OnDelivery(run); err != nil {
+			return fmt.Errorf("registrando delivery: %w", err)
+		}
+	}
 	return nil
+}
+
+func prNumberFromURL(url string) string {
+	url = strings.TrimRight(strings.TrimSpace(url), "/")
+	parts := strings.Split(url, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
 }
 
 func (p *Pipeline) prBody(run *RunState, spec string) string {
@@ -1560,6 +1622,7 @@ func (p *Pipeline) result(run *RunState, summary string) *Result {
 		Worktree: run.Worktree,
 		Branch:   run.Branch,
 		PRURL:    run.PRURL,
+		PRMerged: run.PRMerged,
 		Summary:  summary,
 		Usage:    run.Usage,
 	}

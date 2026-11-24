@@ -75,6 +75,17 @@ type AllLister interface {
 	ListAll(ctx context.Context, f Filter) ([]Ref, error)
 }
 
+type PullRequest struct {
+	ExternalID string
+	URL        string
+	Branch     string
+	TaskID     string
+}
+
+type PullRequestLister interface {
+	ListPullRequests(ctx context.Context) ([]PullRequest, error)
+}
+
 type RunResult struct {
 	RunID   string
 	PRURL   string

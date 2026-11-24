@@ -97,6 +97,16 @@ func (r *Runner) Check(task *source.Task, force bool) (Outcome, bool) {
 			out.Reason = "aguardando input; edite a tarefa na fonte e execute novamente"
 			return out, true
 		}
+	case "pr_open":
+		out.Status = "pr_open"
+		out.RunID = record.RunID
+		out.Reason = "PR aberto; use aiw merge para adotar/mergear"
+		if record.RunID != "" {
+			if run, err := pipeline.LoadRun(r.cfg, record.RunID); err == nil {
+				out.PRURL = run.PRURL
+			}
+		}
+		return out, true
 	}
 	return out, false
 }
@@ -181,6 +191,19 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 
 	pipe := r.pipe.WithLogger(r.pipe.Log.With("task", req.Task.ExternalID, "run_id", runID))
 	req.Options.RunID = runID
+	if req.Options.OnDelivery == nil {
+		task := req.Task
+		req.Options.OnDelivery = func(run *pipeline.RunState) error {
+			return r.store.Put(state.TaskRecord{
+				Key:         task.ClaimKey,
+				Source:      task.Source,
+				ID:          task.ExternalID,
+				Status:      "pr_open",
+				RunID:       run.ID,
+				ContentHash: task.ContentHash,
+			})
+		}
+	}
 	result, runErr := pipe.Run(runCtx, req.Task, req.Ref, req.Repo, req.Options)
 	if result != nil {
 		out.RunID = result.RunID
@@ -206,6 +229,9 @@ func (r *Runner) Execute(ctx context.Context, req Request) (out Outcome) {
 		out.Reason = runErr.Error()
 	case errors.Is(runErr, pipeline.ErrNeedsInput):
 		out.Status = "needs_input"
+	case errors.Is(runErr, pipeline.ErrDeliveryPending):
+		out.Status = "paused"
+		out.Reason = runErr.Error()
 	case errors.Is(runErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled):
 		out.Status = "canceled"
 	default:
@@ -330,6 +356,19 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		}
 	}
 	pipe := r.pipe.WithLogger(r.pipe.Log.With("task", run.Task.ExternalID, "run_id", run.ID))
+	if opts.OnDelivery == nil {
+		task := run.Task
+		opts.OnDelivery = func(run *pipeline.RunState) error {
+			return r.store.Put(state.TaskRecord{
+				Key:         task.ClaimKey,
+				Source:      task.Source,
+				ID:          task.ExternalID,
+				Status:      "pr_open",
+				RunID:       run.ID,
+				ContentHash: task.ContentHash,
+			})
+		}
+	}
 	result, runErr := pipe.Resume(runCtx, runID, opts)
 	if result != nil {
 		out.RunID = result.RunID
@@ -354,6 +393,9 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		out.Reason = runErr.Error()
 	case errors.Is(runErr, pipeline.ErrNeedsInput):
 		out.Status = "needs_input"
+	case errors.Is(runErr, pipeline.ErrDeliveryPending):
+		out.Status = "paused"
+		out.Reason = runErr.Error()
 	case errors.Is(runErr, context.Canceled) || errors.Is(runCtx.Err(), context.Canceled):
 		out.Status = "canceled"
 	default:

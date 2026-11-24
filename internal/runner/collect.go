@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/state"
 )
@@ -44,6 +46,21 @@ func (r *Runner) MarkQueued(candidates []Candidate) error {
 	return nil
 }
 
+func (r *Runner) markPROpen(task *source.Task, pr source.PullRequest) error {
+	runID := strings.TrimPrefix(pr.Branch, "aiw/")
+	if runID == pr.Branch {
+		runID = ""
+	}
+	return r.store.Put(state.TaskRecord{
+		Key:         task.ClaimKey,
+		Source:      task.Source,
+		ID:          task.ExternalID,
+		Status:      "pr_open",
+		RunID:       runID,
+		ContentHash: task.ContentHash,
+	})
+}
+
 func (r *Runner) lookupRecord(task *source.Task) (state.TaskRecord, bool) {
 	if task.ClaimKey != "" {
 		return r.store.FindByKey(task.ClaimKey)
@@ -55,6 +72,23 @@ func (r *Runner) Collect(ctx context.Context, src source.Source, filter source.F
 	refs, err := src.List(ctx, filter)
 	if err != nil {
 		return nil, nil, err
+	}
+	prByTask := map[string]source.PullRequest{}
+	if lister, ok := src.(source.PullRequestLister); ok {
+		prs, err := lister.ListPullRequests(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("listando PRs abertos: %w", err)
+		}
+		for _, pr := range prs {
+			if pr.TaskID != "" {
+				prByTask[pr.TaskID] = pr
+			}
+			if runID := strings.TrimPrefix(pr.Branch, "aiw/"); runID != pr.Branch {
+				if run, loadErr := pipeline.LoadRun(r.cfg, runID); loadErr == nil {
+					prByTask[run.Task.ExternalID] = pr
+				}
+			}
+		}
 	}
 	candidates := make([]Candidate, 0, len(refs))
 	var skips []Outcome
@@ -86,6 +120,19 @@ func (r *Runner) Collect(ctx context.Context, src source.Source, filter source.F
 				skips = append(skips, outcome)
 				continue
 			}
+		}
+		if pr, ok := prByTask[task.ExternalID]; ok {
+			if err := r.markPROpen(task, pr); err != nil {
+				r.pipe.Log.Warn("falha ao registrar PR aberto", "task", task.ExternalID, "error", err)
+			}
+			skips = append(skips, Outcome{
+				TaskID: task.ExternalID,
+				Title:  task.Title,
+				Status: "pr_open",
+				PRURL:  pr.URL,
+				Reason: "PR aberto; use aiw merge para adotar/mergear",
+			})
+			continue
 		}
 		if maxTasks > 0 && len(candidates) >= maxTasks {
 			continue

@@ -18,6 +18,7 @@ import (
 )
 
 var taskItemPattern = regexp.MustCompile(`(?m)^\s*[-*]\s+\[[ xX]\]\s+(.+)$`)
+var closingPattern = regexp.MustCompile(`(?i)(?:closes|fixes|resolves)\s+#?(\d+)`)
 
 type Driver struct {
 	name     string
@@ -94,6 +95,38 @@ func (d *Driver) Name() string { return d.name }
 
 func (d *Driver) Caps() source.Caps {
 	return source.Caps{Comments: true, Pagination: true, WriteBack: true}
+}
+
+type pullRequest struct {
+	Number      int    `json:"number"`
+	URL         string `json:"url"`
+	HeadRefName string `json:"headRefName"`
+	Body        string `json:"body"`
+}
+
+func (d *Driver) ListPullRequests(ctx context.Context) ([]source.PullRequest, error) {
+	output, err := d.run(ctx, "pr", "list", "--repo", d.repo, "--state", "open", "--limit", "200", "--json", "number,url,headRefName,body")
+	if err != nil {
+		return nil, err
+	}
+	var items []pullRequest
+	if err := json.Unmarshal(output, &items); err != nil {
+		return nil, fmt.Errorf("parseando PRs do GitHub: %w", err)
+	}
+	prs := make([]source.PullRequest, 0, len(items))
+	for _, item := range items {
+		taskID := ""
+		if match := closingPattern.FindStringSubmatch(item.Body); len(match) == 2 {
+			taskID = match[1]
+		}
+		prs = append(prs, source.PullRequest{
+			ExternalID: strconv.Itoa(item.Number),
+			URL:        item.URL,
+			Branch:     item.HeadRefName,
+			TaskID:     taskID,
+		})
+	}
+	return prs, nil
 }
 
 func (d *Driver) List(ctx context.Context, filter source.Filter) ([]source.Ref, error) {

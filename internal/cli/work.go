@@ -239,6 +239,8 @@ func printWorkOutcome(out io.Writer, asJSON bool, outcome runner.Outcome) {
 		fmt.Fprintf(out, "[%s] needs_input run=%s perguntas=%s\n", outcome.TaskID, outcome.RunID, filepath.Join(outcome.RunDir, "questions.md"))
 	case "canceled":
 		fmt.Fprintf(out, "[%s] cancelada run=%s\n", outcome.TaskID, outcome.RunID)
+	case "pr_open":
+		fmt.Fprintf(out, "[%s] PR aberto %s\n", outcome.TaskID, outcome.PRURL)
 	case "skipped", "busy":
 		fmt.Fprintf(out, "[%s] ignorada: %s\n", outcome.TaskID, outcome.Reason)
 	default:

@@ -686,7 +686,7 @@ func (s *Server) toolStatus(ctx context.Context) (any, *rpcError) {
 	active := make([]report.Task, 0)
 	for _, task := range built.Tasks {
 		switch task.Status {
-		case "running", "queued", "paused", "needs_input":
+		case "running", "queued", "pr_open", "paused", "needs_input":
 			active = append(active, task)
 		}
 	}

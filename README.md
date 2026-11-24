@@ -151,6 +151,7 @@ aiw resume <run-id>
 | `aiw status [run-id]` | sem id: tarefas em andamento; com id: estado, estágios e custo |
 | `aiw report [--json\|--yaml\|--md\|--html] [--source <nome>]` | relatório read-only de todas as tarefas, custos, claims e alertas |
 | `aiw clean [--dry-run] [--force] [--keep-branches] [--skip-superseded] [--json]` | remove worktrees e branches de runs terminais/superadas |
+| `aiw merge <run-id>` | adota um PR existente, valida CI e faz merge |
 | `aiw mcp [--allow-write]` | servidor MCP stdio para o coordenador |
 | `aiw cancel <run-id>` | cancela uma run em andamento/pausada/needs_input |
 | `aiw approve <run-id> <gate>` | aprova `intake`, `spec` ou `plan` |
@@ -274,6 +275,9 @@ implement → test → review
 - O corretor responde a cada blocker com `FIXED`, `DISPUTED` ou `NEEDS_CLARIFICATION`; o reviewer reavalia e só deve aceitar um dispute com evidência.
 - O limite é `max_review_rounds`; ao exceder, a run fica `paused`, não `failed`.
 - Com `delivery.merge: auto_after_approval` e `--pr`, o worker espera os checks configurados e faz `gh pr merge` apenas com CI verde e PR mergeável.
+- O PR gera `delivery.external_id`/`delivery.status=pr_open`; o PR guard impede que uma nova run seja criada para uma issue que já tem PR aberto.
+- `aiw merge <run-id>` adota PRs existentes (inclusive de runs antigas) e reconcilia o estado local para `succeeded`.
+- `folder` não tem PR: nenhum estado `pr_open` e nenhuma chamada de PR é feita.
 - CI falhou, conflito ou PR não mergeável → run pausa no estágio `deliver` com motivo; nada é mergeado sem `--admin`.
 - O merge é serializado por repositório (`merge_concurrency`, default 1). O merge usa `Closes #N`; a issue fecha no merge.
 - `external_review` é o hook para projetos em grupo; a implementação de ingestão de reviews externos fica para a fase seguinte.
@@ -770,6 +774,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - Resposta inline de `needs_input` e refinamento de gates existem via MCP/coordenador; ainda não há comandos CLI dedicados.
 - Review externo de PR (comentários/threads de grupo) ainda não é consumido pelo aiw.
+- Runs antigas com PR aberto precisam de `aiw merge` ou reconciliação; o guard só age nas coletas novas.
 - Auto-merge valida CI pelo aiw porque o repo de exemplo não tem branch protection; não usa `--admin`.
 - Prioridade/hold, dependências e notificações proativas ainda não estão expostos ao coordenador.
 - Pausa é por estágio; não há checkpoint dentro de um tool call. Retomada de paused/canceladas é explícita (`aiw resume <id>` ou `aiw resume --all`).

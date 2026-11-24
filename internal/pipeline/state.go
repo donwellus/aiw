@@ -24,6 +24,16 @@ type StageState struct {
 	EndedAt   time.Time `json:"ended_at,omitempty"`
 }
 
+type DeliveryState struct {
+	Provider   string    `json:"provider,omitempty"`
+	Kind       string    `json:"kind,omitempty"`
+	ExternalID string    `json:"external_id,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	Branch     string    `json:"branch,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	MergedAt   time.Time `json:"merged_at,omitempty"`
+}
+
 type RunState struct {
 	ID             string            `json:"id"`
 	Task           source.Task       `json:"task"`
@@ -43,6 +53,7 @@ type RunState struct {
 	PRURL          string            `json:"pr_url,omitempty"`
 	PRMerged       bool              `json:"pr_merged,omitempty"`
 	MergedAt       time.Time         `json:"merged_at,omitempty"`
+	Delivery       *DeliveryState    `json:"delivery,omitempty"`
 	Error          string            `json:"error,omitempty"`
 	CreatedAt      time.Time         `json:"created_at"`
 	UpdatedAt      time.Time         `json:"updated_at"`

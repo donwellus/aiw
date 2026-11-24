@@ -21,6 +21,7 @@ type situationSummary struct {
 	Summary     report.Summary      `json:"summary"`
 	Queued      []situationTask     `json:"queued"`
 	Running     []situationTask     `json:"running"`
+	PROpen      []situationTask     `json:"pr_open"`
 	Paused      []situationTask     `json:"paused"`
 	NeedsInput  []situationTask     `json:"needs_input"`
 	Failed      []situationTask     `json:"failed"`
@@ -60,6 +61,7 @@ type situationTask struct {
 	Gate           string    `json:"gate,omitempty"`
 	Reason         string    `json:"reason,omitempty"`
 	Blockers       []string  `json:"blockers,omitempty"`
+	PRURL          string    `json:"pr_url,omitempty"`
 	CostUSD        float64   `json:"cost_usd"`
 	LastEventAt    time.Time `json:"last_event_at,omitempty"`
 	ElapsedSeconds int64     `json:"elapsed_seconds,omitempty"`
@@ -115,6 +117,10 @@ func (s *Server) toolSituation() (any, *rpcError) {
 		case "running":
 			entry.Reason = firstNonEmpty(entry.Reason, "em execução")
 			snapshot.Running = append(snapshot.Running, entry)
+		case "pr_open":
+			entry.Reason = firstNonEmpty(entry.Reason, "PR aberto; aguardando CI/merge")
+			entry.PRURL = task.PRURL
+			snapshot.PROpen = append(snapshot.PROpen, entry)
 		case "paused":
 			snapshot.Paused = append(snapshot.Paused, entry)
 		case "needs_input":

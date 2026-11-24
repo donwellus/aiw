@@ -28,12 +28,16 @@ func setupFakeGH(t *testing.T, listJSON, viewJSON string) (string, *Driver) {
 	if err := os.WriteFile(filepath.Join(fixtures, "view.json"), []byte(viewJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(fixtures, "pr.json"), []byte(prFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	logPath := filepath.Join(dir, "gh.log")
 	script := `#!/bin/sh
 echo "$@" >> "$GH_LOG"
 case "$1 $2" in
   "issue list") cat "$GH_FIXTURES/list.json" ;;
   "issue view") cat "$GH_FIXTURES/view.json" ;;
+  "pr list") cat "$GH_FIXTURES/pr.json" ;;
   "auth status") exit 0 ;;
   "repo view") printf '{"nameWithOwner":"owner/repo"}' ;;
   *) exit 0 ;;
@@ -67,6 +71,11 @@ const listFixture = `[
   {"number":2,"title":"Concluída","body":"x","state":"OPEN","url":"https://github.com/owner/repo/issues/2","labels":[{"name":"aiw"},{"name":"aiw:done"}],"assignees":[],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}
 ]`
 
+const prFixture = `[
+  {"number":10,"url":"https://github.com/owner/repo/pull/10","headRefName":"aiw/run-10","body":"Tarefa\n\nCloses #2"},
+  {"number":11,"url":"https://github.com/owner/repo/pull/11","headRefName":"aiw/run-11","body":"sem referência"}
+]`
+
 const viewFixture = `{"number":1,"title":"Primeira","body":"Corpo com tarefas:\n- [ ] critério A\n- [x] critério B","state":"OPEN","url":"https://github.com/owner/repo/issues/1","labels":[{"name":"aiw"}],"assignees":[{"login":"ana"}],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","comments":[{"author":{"login":"bia"},"body":"detalhe extra","createdAt":"2026-01-03T00:00:00Z"}]}`
 
 func TestListAndFetch(t *testing.T) {
@@ -97,6 +106,23 @@ func TestListAndFetch(t *testing.T) {
 	log := readFile(t, logPath)
 	if !strings.Contains(log, "issue list --repo owner/repo") {
 		t.Fatalf("comando de list ausente: %s", log)
+	}
+}
+
+func TestListPullRequests(t *testing.T) {
+	_, driver := setupFakeGH(t, listFixture, viewFixture)
+	prs, err := driver.ListPullRequests(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prs) != 2 {
+		t.Fatalf("prs = %+v", prs)
+	}
+	if prs[0].ExternalID != "10" || prs[0].TaskID != "2" || prs[0].Branch != "aiw/run-10" {
+		t.Fatalf("pr 10 = %+v", prs[0])
+	}
+	if prs[1].TaskID != "" {
+		t.Fatalf("pr sem closing não deveria ter task: %+v", prs[1])
 	}
 }
 
