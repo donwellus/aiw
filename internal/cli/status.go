@@ -95,15 +95,17 @@ func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) erro
 		return nil
 	}
 	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "TAREFA\tSTATUS\tESTÁGIO\tRUN\tCUSTO")
+	fmt.Fprintln(writer, "TAREFA\tSTATUS\tESTÁGIO\tRUN\tCUSTO\tTÍTULO")
 	for _, record := range active {
 		status := record.Status
 		stage := "-"
+		title := "-"
 		cost := 0.0
 		if record.RunID != "" {
 			if run, err := pipeline.LoadRun(cfg, record.RunID); err == nil {
 				status = run.Status
 				stage = run.Stage
+				title = statusTitle(run.Task.Title)
 				cost = run.Usage.CostUSD
 			}
 		}
@@ -111,9 +113,22 @@ func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) erro
 		if runID == "" {
 			runID = "-"
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\tUS$ %.4f\n", record.ID, status, stage, runID, cost)
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\tUS$ %.4f\t%s\n", record.ID, status, stage, runID, cost, title)
 	}
 	writer.Flush()
 	fmt.Fprintf(out, "\n%d tarefa(s) em andamento\n", len(active))
 	return nil
+}
+
+func statusTitle(title string) string {
+	title = strings.Join(strings.Fields(title), " ")
+	if title == "" {
+		return "-"
+	}
+	const max = 60
+	runes := []rune(title)
+	if len(runes) <= max {
+		return title
+	}
+	return string(runes[:max-3]) + "..."
 }
