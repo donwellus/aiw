@@ -81,6 +81,11 @@ RISK: LOW
 		return Result{Output: "implementação simulada criada em AIW_FAKE_CHANGE.md\n"}, nil
 	case "review":
 		return Result{Output: "APROVADO\n\nRevisão simulada pelo engine fake.\n"}, nil
+	case "external-review":
+		if strings.Contains(req.Prompt, "force-conflict") {
+			return Result{Output: "DECISION: CONFLICT\nREPLY: conflito de escopo\nDETAILS: o pedido muda a spec\n"}, nil
+		}
+		return Result{Output: "DECISION: NO_ACTION\nREPLY: feedback já atendido\nDETAILS: sem mudança necessária\n"}, nil
 	default:
 		return Result{Output: "ok (fake)\n"}, nil
 	}

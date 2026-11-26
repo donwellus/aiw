@@ -86,6 +86,34 @@ type PullRequestLister interface {
 	ListPullRequests(ctx context.Context) ([]PullRequest, error)
 }
 
+// ExternalReplyMarker identifica respostas escritas pelo aiw e evita que a
+// própria resposta seja ingerida como novo feedback externo.
+const ExternalReplyMarker = "<!-- aiw:external-reply -->"
+
+type PullRequestFeedback struct {
+	ID        string    `json:"id"`
+	ThreadID  string    `json:"thread_id,omitempty"`
+	Kind      string    `json:"kind"`
+	Author    string    `json:"author,omitempty"`
+	Body      string    `json:"body"`
+	Path      string    `json:"path,omitempty"`
+	Line      int       `json:"line,omitempty"`
+	State     string    `json:"state,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	CommitID  string    `json:"commit_id,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+
+type PullRequestReview struct {
+	Decision string                `json:"decision,omitempty"`
+	Feedback []PullRequestFeedback `json:"feedback,omitempty"`
+}
+
+type PullRequestReviewer interface {
+	ReadPullRequestReview(ctx context.Context, pr PullRequest) (*PullRequestReview, error)
+	ReplyPullRequestFeedback(ctx context.Context, pr PullRequest, feedback PullRequestFeedback, body string) error
+}
+
 type RunResult struct {
 	RunID   string
 	PRURL   string

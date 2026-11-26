@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/donwellus/aiw/internal/config"
@@ -152,6 +153,12 @@ func (e *Executor) runResumeAll(ctx context.Context, operation *Operation) (map[
 func (e *Executor) runRefine(ctx context.Context, operation *Operation) (map[string]any, error) {
 	target, _ := operation.Args["target"].(string)
 	feedback, _ := operation.Args["feedback"].(string)
+	previewID, _ := operation.Args["preview_id"].(string)
+	if strings.TrimSpace(previewID) == "" {
+		e.log.Warn("refine legado sem preview_id; permitindo por compatibilidade", "operation_id", operation.ID, "run_id", operation.RunID)
+	} else if _, err := ValidateRefinePreview(e.cfg, operation.RunID, target, feedback, previewID); err != nil {
+		return map[string]any{"run_id": operation.RunID, "preview_id": previewID}, err
+	}
 	_, prepared, err := PrepareRefine(e.cfg, operation.RunID, target, feedback)
 	if err != nil {
 		return nil, err

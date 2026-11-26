@@ -31,6 +31,9 @@ func setupFakeGH(t *testing.T, listJSON, viewJSON string) (string, *Driver) {
 	if err := os.WriteFile(filepath.Join(fixtures, "pr.json"), []byte(prFixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(fixtures, "review.json"), []byte(reviewFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	logPath := filepath.Join(dir, "gh.log")
 	script := `#!/bin/sh
 echo "$@" >> "$GH_LOG"
@@ -38,6 +41,7 @@ case "$1 $2" in
   "issue list") cat "$GH_FIXTURES/list.json" ;;
   "issue view") cat "$GH_FIXTURES/view.json" ;;
   "pr list") cat "$GH_FIXTURES/pr.json" ;;
+  "api graphql") cat "$GH_FIXTURES/review.json" ;;
   "auth status") exit 0 ;;
   "repo view") printf '{"nameWithOwner":"owner/repo"}' ;;
   *) exit 0 ;;
@@ -75,6 +79,48 @@ const prFixture = `[
   {"number":10,"url":"https://github.com/owner/repo/pull/10","headRefName":"aiw/run-10","body":"Tarefa\n\nCloses #2"},
   {"number":11,"url":"https://github.com/owner/repo/pull/11","headRefName":"aiw/run-11","body":"sem referência"}
 ]`
+
+const reviewFixture = `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewDecision": "CHANGES_REQUESTED",
+        "reviews": {
+          "nodes": [
+            {"id":"R_approved","state":"APPROVED","body":"ok","submittedAt":"2026-01-01T00:00:00Z","url":"https://github.com/owner/repo/pull/10#pullrequestreview-1","author":{"login":"ana"},"commit":{"oid":"abc"}},
+            {"id":"R_changes","state":"CHANGES_REQUESTED","body":"Ajuste o erro de parsing.","submittedAt":"2026-01-02T00:00:00Z","url":"https://github.com/owner/repo/pull/10#pullrequestreview-2","author":{"login":"bia"},"commit":{"oid":"abc"}},
+            {"id":"R_own","state":"CHANGES_REQUESTED","body":"<!-- aiw:external-reply --> resposta do aiw","submittedAt":"2026-01-02T00:00:00Z","author":{"login":"bot"},"commit":{"oid":"abc"}}
+          ]
+        },
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id":"THREAD_open",
+              "isResolved":false,
+              "isOutdated":false,
+              "comments":{"nodes":[
+                {"id":"C_own","body":"<!-- aiw:external-reply --> feito","path":"a.go","line":10,"createdAt":"2026-01-02T00:00:00Z","url":"u1","author":{"login":"bot"}},
+                {"id":"C_external","body":"Cubra o caso de timeout.","path":"a.go","line":10,"createdAt":"2026-01-03T00:00:00Z","url":"u2","author":{"login":"ana"}}
+              ]}
+            },
+            {
+              "id":"THREAD_resolved",
+              "isResolved":true,
+              "isOutdated":false,
+              "comments":{"nodes":[{"id":"C_resolved","body":"resolvido","path":"b.go","line":1,"createdAt":"2026-01-03T00:00:00Z","url":"u3","author":{"login":"ana"}}]}
+            }
+          ]
+        },
+        "comments": {
+          "nodes": [
+            {"id":"IC_external","body":"Comentário geral externo.","createdAt":"2026-01-04T00:00:00Z","url":"u4","author":{"login":"caio"}},
+            {"id":"IC_own","body":"<!-- aiw:external-reply --> resposta","createdAt":"2026-01-04T00:00:00Z","url":"u5","author":{"login":"bot"}}
+          ]
+        }
+      }
+    }
+  }
+}`
 
 const viewFixture = `{"number":1,"title":"Primeira","body":"Corpo com tarefas:\n- [ ] critério A\n- [x] critério B","state":"OPEN","url":"https://github.com/owner/repo/issues/1","labels":[{"name":"aiw"}],"assignees":[{"login":"ana"}],"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","comments":[{"author":{"login":"bia"},"body":"detalhe extra","createdAt":"2026-01-03T00:00:00Z"}]}`
 
@@ -123,6 +169,41 @@ func TestListPullRequests(t *testing.T) {
 	}
 	if prs[1].TaskID != "" {
 		t.Fatalf("pr sem closing não deveria ter task: %+v", prs[1])
+	}
+}
+
+func TestReadAndReplyPullRequestReview(t *testing.T) {
+	logPath, driver := setupFakeGH(t, listFixture, viewFixture)
+	ctx := context.Background()
+	pr := source.PullRequest{ExternalID: "10", URL: "https://github.com/owner/repo/pull/10", Branch: "aiw/run-10"}
+	review, err := driver.ReadPullRequestReview(ctx, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Decision != "CHANGES_REQUESTED" {
+		t.Fatalf("decision = %q", review.Decision)
+	}
+	if len(review.Feedback) != 3 {
+		t.Fatalf("feedback = %+v", review.Feedback)
+	}
+	if review.Feedback[0].ID != "review:R_changes" || review.Feedback[1].ID != "thread-comment:C_external" || review.Feedback[1].ThreadID != "THREAD_open" || review.Feedback[2].ID != "pr-comment:IC_external" {
+		t.Fatalf("feedback inesperado: %+v", review.Feedback)
+	}
+	if err := driver.ReplyPullRequestFeedback(ctx, pr, review.Feedback[1], "corrigido"); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.ReplyPullRequestFeedback(ctx, pr, review.Feedback[2], "corrigido"); err != nil {
+		t.Fatal(err)
+	}
+	log := readFile(t, logPath)
+	if !strings.Contains(log, "api graphql") || !strings.Contains(log, "addPullRequestReviewThreadReply") {
+		t.Fatalf("resposta de thread ausente: %s", log)
+	}
+	if !strings.Contains(log, "pr comment https://github.com/owner/repo/pull/10") {
+		t.Fatalf("comentário geral ausente: %s", log)
+	}
+	if !strings.Contains(log, source.ExternalReplyMarker) {
+		t.Fatalf("marcador de resposta ausente: %s", log)
 	}
 }
 

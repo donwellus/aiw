@@ -234,12 +234,15 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
   `shell` e `subagent`.
 - Leitura: `aiw_situation`, `aiw_status`, `aiw_report`, `aiw_runs`,
   `aiw_run_show`, `aiw_events`, `aiw_daemon_status`, `aiw_operations`,
-  `aiw_clean_preview`.
+  `aiw_clean_preview`, `aiw_refine_preview`.
 - `aiw_situation` distingue fila `queued`, runs ativas, pausas com gate/blockers,
   operações de controle e capacidade real (`worker_slots` × runs ativas).
 - Controle: pause, resume assíncrono, cancel, answer, refine, approve, release
-  e clean. `release` e `clean_apply` pedem confirmação; `clean_apply` também
-  exige `confirm=true`.
+  e clean. `refine`, `release` e `clean_apply` pedem confirmação no OpenCode;
+  `clean_apply` também exige `confirm=true`.
+- `aiw_refine_preview` mostra o feedback e o impacto sem alterar nada. O
+  `aiw_refine` exige o `preview_id` retornado; feedback ou estado alterados
+  invalidam o preview.
 - `aiw_refine` refina run pausada em gate com `target=intake|spec|plan`:
   `spec` regenera spec e plano; `plan` regenera só o plano.
 - `resume` retorna um `operation_id`; o daemon executa em background para o
@@ -280,14 +283,23 @@ implement → test → review
 - `folder` não tem PR: nenhum estado `pr_open` e nenhuma chamada de PR é feita.
 - CI falhou, conflito ou PR não mergeável → run pausa no estágio `deliver` com motivo; nada é mergeado sem `--admin`.
 - O merge é serializado por repositório (`merge_concurrency`, default 1). O merge usa `Closes #N`; a issue fecha no merge.
-- `external_review` é o hook para projetos em grupo; a implementação de ingestão de reviews externos fica para a fase seguinte.
+- `external_review` aceita `ignore`, `consume` ou `require`:
+  - `ignore`: não lê reviews externos (padrão solo);
+  - `consume`: processa `CHANGES_REQUESTED`/threads/comentários e espera o revisor liberar quando houver pedido de mudança;
+  - `require`: além de processar, só mergeia com `reviewDecision: APPROVED`.
+- O corretor externo recebe requisitos/spec/plano/diff/test log e o feedback; ele só corrige código/testes. Se o pedido exigir mudar requisitos/spec/plano, ele pausa em `external-review-conflict.md` para decisão humana.
+- `external_reply` aceita `auto`, `auto_unless_conflict` (padrão) ou `never`. Respostas do aiw levam um marcador oculto e não são reinjetadas.
+- `resolve_conflicts: auto` resolve conflitos de merge no mesmo loop do `deliver`: fetch da base, merge, corretor dedicado, testes, push e nova espera de CI. Conflito em spec/plano pausa para decisão humana; `conflict_max_rounds` limita as tentativas.
+- Threads resolvidas/outdated são ignoradas; o aiw responde na thread (GraphQL) e marca o feedback como processado.
 
 Limitações desta versão:
 
 - O worker fica ocupado enquanto aguarda CI/merge.
 - Falha de CI pós-PR pausa a run; correção automática pós-CI ainda não está implementada.
 - Conflitos de merge pausam; não há rebase automático nem merge queue avançada.
-- Review externo (`CHANGES_REQUESTED`/threads) ainda não é ingerido; `external_review` apenas prepara a política.
+- Review externo é síncrono no worker e respeita `ci_timeout`; esperar aprovação humana ocupa o slot de delivery.
+- Conflito de review externo com requisitos/spec/plano pausa a run; não há merge nem resposta automática nesse caso.
+- A resolução automática de conflito de merge não executa código de PR externo; atua no worktree da run do aiw.
 
 ### Paralelismo (`aiw work`)
 
@@ -474,8 +486,10 @@ delivery:
   ci_poll_interval: 10s
   max_fix_rounds: 3
   merge_concurrency: 1
-  external_review: ignore      # ignore | consume | require (grupo, fase futura)
+  external_review: ignore      # ignore | consume | require (grupo)
   external_reply: auto_unless_conflict
+  resolve_conflicts: auto      # auto | off
+  conflict_max_rounds: 2
 
 default_source: folder
 
@@ -773,7 +787,7 @@ Contribuições seguem o modelo inbound = outbound sob a mesma licença; veja [C
 - `tasks/` é local ao clone; daemon e conectores remotos (GitHub/Linear/Jira/Trello) cobrem o uso compartilhado.
 - `resume` retoma por estágio; loops parciais de teste/review são reexecutados.
 - Resposta inline de `needs_input` e refinamento de gates existem via MCP/coordenador; ainda não há comandos CLI dedicados.
-- Review externo de PR (comentários/threads de grupo) ainda não é consumido pelo aiw.
+- Review externo exige token com permissão de leitura/escrita no PR e ocupa o worker enquanto aguarda aprovação.
 - Runs antigas com PR aberto precisam de `aiw merge` ou reconciliação; o guard só age nas coletas novas.
 - Auto-merge valida CI pelo aiw porque o repo de exemplo não tem branch protection; não usa `--admin`.
 - Prioridade/hold, dependências e notificações proativas ainda não estão expostos ao coordenador.

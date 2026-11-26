@@ -1122,10 +1122,24 @@ PYRUN
 "$AIW" --root "$DIR" daemon --workers 1 --interval 100ms >"$DIR/daemon.log" 2>"$DIR/daemon.err" &
 DAEMON_PID=$!
 for i in $(seq 1 100); do [ -f "$DIR/.aiw/daemon.json" ] && break; sleep 0.1; done
+cat > "$DIR/mcp-preview-in.jsonl" <<MCPIN
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"refine_preview","arguments":{"run_id":"$RUN_ID","target":"plan","feedback":"Ajuste o plano para incluir testes de regressão."}}}
+MCPIN
+"$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-preview-in.jsonl" >"$DIR/mcp-preview-out.jsonl" 2>"$DIR/mcp.err"
+PREVIEW_ID=$(python3 - "$DIR/mcp-preview-out.jsonl" <<'PYMCP'
+import json
+import sys
+responses = {str(item["id"]): item for item in map(json.loads, open(sys.argv[1])) if "id" in item}
+print(responses["2"]["result"]["structuredContent"]["preview_id"])
+PYMCP
+)
+[ -n "$PREVIEW_ID" ] || fail "refine_preview não retornou preview_id"
 cat > "$DIR/mcp-in.jsonl" <<MCPIN
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}
 {"jsonrpc":"2.0","method":"notifications/initialized"}
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"refine","arguments":{"run_id":"$RUN_ID","target":"plan","feedback":"Ajuste o plano para incluir testes de regressão."}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"refine","arguments":{"run_id":"$RUN_ID","target":"plan","feedback":"Ajuste o plano para incluir testes de regressão.","preview_id":"$PREVIEW_ID"}}}
 MCPIN
 "$AIW" --root "$DIR" mcp --allow-write <"$DIR/mcp-in.jsonl" >"$DIR/mcp-out.jsonl" 2>"$DIR/mcp.err"
 OP_ID=$(python3 - "$DIR/mcp-out.jsonl" <<'PYMCP'
@@ -1192,7 +1206,7 @@ assert "1" in by_id, responses
 assert by_id["1"]["result"]["serverInfo"]["name"] == "aiw", by_id["1"]
 tools = {tool["name"] for tool in by_id["2"]["result"]["tools"]}
 assert {"status", "report", "runs", "run_show", "events"} <= tools, tools
-for forbidden in ("pause", "resume", "approve", "release", "clean", "clean_apply", "cancel", "answer"):
+for forbidden in ("pause", "resume", "approve", "release", "clean", "clean_apply", "cancel", "answer", "refine"):
     assert forbidden not in tools, tools
 status = by_id["3"]["result"]["structuredContent"]
 assert status["summary"]["tasks"] >= 1, status

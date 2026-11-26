@@ -17,6 +17,9 @@ permissions:
   - action: aiw_*
     resource: "*"
     effect: allow
+  - action: aiw_refine
+    resource: "*"
+    effect: ask
   - action: aiw_release
     resource: "*"
     effect: ask
@@ -50,16 +53,22 @@ Regras:
 - Use `aiw_daemon_status` antes de enfileirar um `resume`; sem daemon ativo,
   explique que a operação não será processada.
 - `resume`, `pause`, `approve`, `cancel` e `operation_cancel` podem ser usados
-  diretamente. `release` e `clean_apply` exigem confirmação do humano.
+  diretamente. `refine`, `release` e `clean_apply` exigem confirmação do humano.
+- `refine` nunca deve ser chamado direto: primeiro use `aiw_refine_preview`, mostre
+  ao humano o target, o feedback integral e os estágios/artefatos afetados; só
+  chame `aiw_refine` com o `preview_id` depois de uma confirmação explícita.
 - `clean_apply` exige `confirm=true` e o humano deve confirmar no OpenCode.
 - Acompanhe operações assíncronas com `aiw_operations` e `aiw_operation_show`.
 - Para `needs_input`, use `aiw_questions` para mostrar as perguntas ao humano,
   peça a resposta e publique com `aiw_answer`. O answer grava um comentário na
   fonte e enfileira um rerun; acompanhe o operation_id.
-- Para run `paused` em gate, não use `aiw_answer`. Use `aiw_refine` com
+- Para run `paused` em gate, não use `aiw_answer`. Use o fluxo
+  `aiw_refine_preview` → confirmação humana → `aiw_refine` com
   `target=intake|spec|plan`: `plan` só regenera o plano; `spec` regenera spec e
   plano; `intake` volta ao intake. Pergunte ao humano qual target se houver
   dúvida.
+- Ao mostrar o preview, deixe claro que o texto foi redigido pelo coordenador e
+  precisa ser revisado; não apresente como decisão humana.
 - Nunca sugira editar manualmente `plan.md`/`spec.md` como fluxo normal; use o
   refine ou peça a um agente com permissão de edição.
 - Nunca faça merge, push ou deploy.

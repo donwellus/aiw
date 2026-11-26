@@ -24,6 +24,25 @@ type StageState struct {
 	EndedAt   time.Time `json:"ended_at,omitempty"`
 }
 
+type ExternalReviewState struct {
+	Processed      []string  `json:"processed,omitempty"`
+	Rounds         int       `json:"rounds,omitempty"`
+	LastDecision   string    `json:"last_decision,omitempty"`
+	LastFeedbackAt time.Time `json:"last_feedback_at,omitempty"`
+	ConflictPath   string    `json:"conflict_path,omitempty"`
+}
+
+type ConflictState struct {
+	Attempts     int       `json:"attempts,omitempty"`
+	BaseRef      string    `json:"base_ref,omitempty"`
+	BaseCommit   string    `json:"base_commit,omitempty"`
+	Files        []string  `json:"files,omitempty"`
+	Status       string    `json:"status,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+	ResolvedAt   time.Time `json:"resolved_at,omitempty"`
+	ConflictPath string    `json:"conflict_path,omitempty"`
+}
+
 type DeliveryState struct {
 	Provider   string    `json:"provider,omitempty"`
 	Kind       string    `json:"kind,omitempty"`
@@ -35,28 +54,30 @@ type DeliveryState struct {
 }
 
 type RunState struct {
-	ID             string            `json:"id"`
-	Task           source.Task       `json:"task"`
-	Source         string            `json:"source"`
-	Ref            source.Ref        `json:"ref"`
-	Repo           string            `json:"repo"`
-	Worktree       string            `json:"worktree"`
-	Branch         string            `json:"branch"`
-	BaseCommit     string            `json:"base_commit"`
-	Status         string            `json:"status"`
-	Stage          string            `json:"stage"`
-	EngineOverride string            `json:"engine_override,omitempty"`
-	Stages         []StageState      `json:"stages"`
-	Gates          map[string]string `json:"gates"`
-	Usage          engine.Usage      `json:"usage"`
-	Artifacts      map[string]string `json:"artifacts"`
-	PRURL          string            `json:"pr_url,omitempty"`
-	PRMerged       bool              `json:"pr_merged,omitempty"`
-	MergedAt       time.Time         `json:"merged_at,omitempty"`
-	Delivery       *DeliveryState    `json:"delivery,omitempty"`
-	Error          string            `json:"error,omitempty"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	ID             string               `json:"id"`
+	Task           source.Task          `json:"task"`
+	Source         string               `json:"source"`
+	Ref            source.Ref           `json:"ref"`
+	Repo           string               `json:"repo"`
+	Worktree       string               `json:"worktree"`
+	Branch         string               `json:"branch"`
+	BaseCommit     string               `json:"base_commit"`
+	Status         string               `json:"status"`
+	Stage          string               `json:"stage"`
+	EngineOverride string               `json:"engine_override,omitempty"`
+	Stages         []StageState         `json:"stages"`
+	Gates          map[string]string    `json:"gates"`
+	Usage          engine.Usage         `json:"usage"`
+	Artifacts      map[string]string    `json:"artifacts"`
+	PRURL          string               `json:"pr_url,omitempty"`
+	PRMerged       bool                 `json:"pr_merged,omitempty"`
+	MergedAt       time.Time            `json:"merged_at,omitempty"`
+	Delivery       *DeliveryState       `json:"delivery,omitempty"`
+	ExternalReview *ExternalReviewState `json:"external_review,omitempty"`
+	Conflict       *ConflictState       `json:"conflict,omitempty"`
+	Error          string               `json:"error,omitempty"`
+	CreatedAt      time.Time            `json:"created_at"`
+	UpdatedAt      time.Time            `json:"updated_at"`
 }
 
 var stageOrder = []string{"intake", "requirements", "architect", "implement", "test", "review", "deliver"}

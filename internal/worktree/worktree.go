@@ -117,6 +117,76 @@ func (w *Worktree) Push(ctx context.Context) error {
 	return err
 }
 
+func (w *Worktree) Fetch(ctx context.Context, remote, ref string) error {
+	_, err := git(ctx, w.Path, "fetch", remote, ref)
+	return err
+}
+
+func (w *Worktree) RevParse(ctx context.Context, ref string) (string, error) {
+	out, err := git(ctx, w.Path, "rev-parse", ref)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (w *Worktree) Merge(ctx context.Context, ref string) ([]string, error) {
+	_, err := git(ctx, w.Path, "-c", "user.name=aiw", "-c", "user.email=aiw@localhost", "merge", "--no-ff", "--no-edit", ref)
+	conflicts, conflictErr := w.ConflictFiles(ctx)
+	if conflictErr != nil {
+		return nil, conflictErr
+	}
+	if len(conflicts) > 0 {
+		return conflicts, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+func (w *Worktree) ConflictFiles(ctx context.Context) ([]string, error) {
+	out, err := git(ctx, w.Path, "diff", "--name-only", "--diff-filter=U")
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	files := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if line = strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+func (w *Worktree) Add(ctx context.Context, paths ...string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	args := append([]string{"add", "--"}, paths...)
+	_, err := git(ctx, w.Path, args...)
+	return err
+}
+
+func (w *Worktree) CommitMerge(ctx context.Context) error {
+	_, err := git(ctx, w.Path, "-c", "user.name=aiw", "-c", "user.email=aiw@localhost", "commit", "--no-gpg-sign", "--no-edit")
+	return err
+}
+
+func (w *Worktree) AbortMerge(ctx context.Context) error {
+	_, err := git(ctx, w.Path, "merge", "--abort")
+	return err
+}
+
+func (w *Worktree) Head(ctx context.Context) (string, error) {
+	out, err := git(ctx, w.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 func (w *Worktree) Remove(ctx context.Context, force bool) error {
 	unlock := lockRepo(w.Repo)
 	fsUnlock, lockErr := lockWorktreeFS(ctx, w.Repo)

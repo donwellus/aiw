@@ -105,7 +105,8 @@ Controle:
 | `aiw_operation_cancel` | cancela operação pendente/em execução |
 | `aiw_cancel` | cancela run em andamento, pausada ou needs_input |
 | `aiw_answer` | publica resposta na fonte e enfileira rerun (só `needs_input`) |
-| `aiw_refine` | refina gate pausado com `target=intake\|spec\|plan` |
+| `aiw_refine_preview` | prévia read-only do feedback/impacto do refine |
+| `aiw_refine` | refina gate pausado; exige `preview_id` e confirmação |
 
 `resume` não bloqueia: o daemon executa e o coordenador acompanha:
 
@@ -137,6 +138,22 @@ Coordenador:
   [aiw_resume {run_id: "X", auto: true}]
   Operação op-... enfileirada.
 
+Você: refina a task X para corrigir o blocker.
+
+Coordenador:
+  [aiw_refine_preview {run_id: "X", target: "plan", feedback: "..."}]
+  Preview: target plan, gate em architect; serão regenerados plan e estágios
+  seguintes. Feedback proposto (redigido por mim, revise):
+  ...
+  preview_id: rp-...
+  Confirma?
+
+Você: confirmo.
+
+Coordenador:
+  [aiw_refine {run_id: "X", target: "plan", feedback: "...", preview_id: "rp-..."}]
+  Refine enfileirado: op-...
+
 Você: e o que falhou?
 
 Coordenador:
@@ -161,7 +178,9 @@ Coordenador:
 ## Segurança
 
 - O agente nega `edit`, `shell` e `subagent`.
-- `release` e `clean_apply` pedem confirmação no OpenCode.
+- `refine`, `release` e `clean_apply` pedem confirmação no OpenCode.
+- `refine` exige `preview_id` de `aiw_refine_preview`; o MCP revalida o token
+  antes de enfileirar e o executor revalida antes de aplicar.
 - `clean_apply` também exige `confirm=true` no MCP.
 - O coordenador não faz merge, push ou deploy.
 - Workers continuam sujeitos a claims, worktrees, gates e permissões do aiw.

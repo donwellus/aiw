@@ -128,7 +128,7 @@ func TestInitializeListAndReadTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"status", "report", "runs", "run_show", "events"} {
+	for _, want := range []string{"status", "report", "runs", "run_show", "events", "refine_preview"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente: %+v", want, names)
 		}
@@ -337,5 +337,82 @@ func TestSituationIncludesQueuePauseAndCapacity(t *testing.T) {
 	blockers := pausedTask["blockers"].([]any)
 	if len(blockers) != 2 {
 		t.Fatalf("blockers = %+v", blockers)
+	}
+}
+
+func TestRefinePreviewRequiresConfirmationToken(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	worktree := filepath.Join(cfg.WorktreesDir(), "run-refine")
+	if err := os.MkdirAll(filepath.Join(worktree, ".aiw-run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	paused := &pipeline.RunState{
+		ID:        "run-refine",
+		Task:      source.Task{Source: "folder", ExternalID: "task-refine", Title: "Refine"},
+		Source:    "folder",
+		Repo:      cfg.Root,
+		Worktree:  worktree,
+		Branch:    "aiw/run-refine",
+		Status:    "paused",
+		Stage:     "architect",
+		Gates:     map[string]string{"intake": "approved", "spec": "approved", "plan": "escalated"},
+		CreatedAt: time.Now().UTC(),
+	}
+	for _, name := range []string{"intake", "requirements", "architect", "implement", "test", "review", "deliver"} {
+		status := "pending"
+		switch name {
+		case "intake", "requirements":
+			status = "done"
+		case "architect":
+			status = "gated"
+		}
+		paused.Stages = append(paused.Stages, pipeline.StageState{Name: name, Status: status})
+	}
+	if err := pipeline.SaveRun(cfg, paused); err != nil {
+		t.Fatal(err)
+	}
+
+	previewResponse := serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"refine_preview","arguments":{"run_id":"run-refine","target":"plan","feedback":"Ajuste o plano."}}}`+"\n")[0]
+	preview := toolStructured(t, previewResponse)
+	previewID, _ := preview["preview_id"].(string)
+	if previewID == "" || preview["target"] != "plan" || preview["feedback"] != "Ajuste o plano." {
+		t.Fatalf("preview = %+v", preview)
+	}
+	ops, err := control.OpenOperationStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operations, err := ops.List(0); err != nil || len(operations) != 0 {
+		t.Fatalf("preview enfileirou operação: %+v err=%v", operations, err)
+	}
+
+	server.allowWrite = true
+	if err := control.WriteDaemonInfo(cfg, control.DaemonInfo{PID: os.Getpid(), Workers: 1, Interval: "1m", StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"refine","arguments":{"run_id":"run-refine","target":"plan","feedback":"Ajuste o plano."}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"refine","arguments":{"run_id":"run-refine","target":"plan","feedback":"Outro feedback.","preview_id":"` + previewID + `"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"refine","arguments":{"run_id":"run-refine","target":"plan","feedback":"Ajuste o plano.","preview_id":"` + previewID + `"}}}`,
+	}, "\n") + "\n"
+	responses := serve(t, server, input)
+	for _, response := range responses[:2] {
+		var result struct {
+			IsError bool `json:"isError"`
+		}
+		if response.Error != nil || json.Unmarshal(response.Result, &result) != nil || !result.IsError {
+			t.Fatalf("refine sem preview válido deveria falhar: %+v", response)
+		}
+	}
+	toolStructured(t, responses[2])
+	operations, err := ops.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].Action != control.ActionRefine {
+		t.Fatalf("operações = %+v", operations)
+	}
+	if operations[0].Args["preview_id"] != previewID {
+		t.Fatalf("preview_id não persistido: %+v", operations[0].Args)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -307,6 +308,9 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		out.Status = "skipped"
 		out.Reason = "run já concluída"
 		return out, nil
+	}
+	if strings.TrimSpace(run.PRURL) != "" && !opts.CreatePR {
+		opts.CreatePR = true
 	}
 	_ = os.Remove(r.cancelMarkerPath(run.ID))
 	runCtx, stopCancel := r.watchCancel(ctx, run.ID)

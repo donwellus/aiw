@@ -392,3 +392,234 @@ func truncate(value string, max int) string {
 	}
 	return value[:max] + "...(truncado)"
 }
+
+const pullRequestReviewQuery = `
+query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewDecision
+      reviews(first: 100) {
+        nodes {
+          id state body submittedAt url
+          author { login }
+          commit { oid }
+        }
+      }
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first: 100) {
+            nodes {
+              id body path line createdAt url
+              author { login }
+            }
+          }
+        }
+      }
+      comments(first: 100) {
+        nodes {
+          id body createdAt url
+          author { login }
+        }
+      }
+    }
+  }
+}`
+
+const reviewThreadReplyMutation = `
+mutation($thread: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $thread, body: $body}) {
+    comment { id }
+  }
+}`
+
+type gqlActor struct {
+	Login string `json:"login"`
+}
+
+type gqlReview struct {
+	ID          string   `json:"id"`
+	State       string   `json:"state"`
+	Body        string   `json:"body"`
+	SubmittedAt string   `json:"submittedAt"`
+	URL         string   `json:"url"`
+	Author      gqlActor `json:"author"`
+	Commit      struct {
+		OID string `json:"oid"`
+	} `json:"commit"`
+}
+
+type gqlComment struct {
+	ID        string   `json:"id"`
+	Body      string   `json:"body"`
+	Path      string   `json:"path"`
+	Line      int      `json:"line"`
+	CreatedAt string   `json:"createdAt"`
+	URL       string   `json:"url"`
+	Author    gqlActor `json:"author"`
+}
+
+type gqlReviewThread struct {
+	ID         string `json:"id"`
+	IsResolved bool   `json:"isResolved"`
+	IsOutdated bool   `json:"isOutdated"`
+	Comments   struct {
+		Nodes []gqlComment `json:"nodes"`
+	} `json:"comments"`
+}
+
+type gqlPullRequest struct {
+	ReviewDecision string `json:"reviewDecision"`
+	Reviews        struct {
+		Nodes []gqlReview `json:"nodes"`
+	} `json:"reviews"`
+	ReviewThreads struct {
+		Nodes []gqlReviewThread `json:"nodes"`
+	} `json:"reviewThreads"`
+	Comments struct {
+		Nodes []gqlComment `json:"nodes"`
+	} `json:"comments"`
+}
+
+type gqlReviewResponse struct {
+	Data struct {
+		Repository struct {
+			PullRequest *gqlPullRequest `json:"pullRequest"`
+		} `json:"repository"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+func (d *Driver) ReadPullRequestReview(ctx context.Context, pr source.PullRequest) (*source.PullRequestReview, error) {
+	number, err := pullRequestNumber(pr)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.SplitN(d.repo, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("repo inválido: %q", d.repo)
+	}
+	output, err := d.run(ctx, "api", "graphql",
+		"-f", "query="+pullRequestReviewQuery,
+		"-f", "owner="+parts[0],
+		"-f", "repo="+parts[1],
+		"-F", fmt.Sprintf("number=%d", number),
+	)
+	if err != nil {
+		return nil, err
+	}
+	var response gqlReviewResponse
+	if err := json.Unmarshal(output, &response); err != nil {
+		return nil, fmt.Errorf("parseando review do PR #%d: %w", number, err)
+	}
+	if len(response.Errors) > 0 {
+		return nil, fmt.Errorf("graphql do PR #%d: %s", number, response.Errors[0].Message)
+	}
+	item := response.Data.Repository.PullRequest
+	if item == nil {
+		return nil, fmt.Errorf("PR #%d não encontrado", number)
+	}
+	review := &source.PullRequestReview{Decision: strings.ToUpper(strings.TrimSpace(item.ReviewDecision))}
+	for _, entry := range item.Reviews.Nodes {
+		state := strings.ToUpper(strings.TrimSpace(entry.State))
+		if state == "APPROVED" || state == "DISMISSED" || state == "PENDING" {
+			continue
+		}
+		if !actionableBody(entry.Body) {
+			continue
+		}
+		review.Feedback = append(review.Feedback, source.PullRequestFeedback{
+			ID:        "review:" + entry.ID,
+			Kind:      "review",
+			Author:    entry.Author.Login,
+			Body:      strings.TrimSpace(entry.Body),
+			State:     state,
+			URL:       entry.URL,
+			CommitID:  entry.Commit.OID,
+			CreatedAt: parseGitHubTime(entry.SubmittedAt),
+		})
+	}
+	for _, thread := range item.ReviewThreads.Nodes {
+		if thread.IsResolved || thread.IsOutdated {
+			continue
+		}
+		for _, entry := range thread.Comments.Nodes {
+			if !actionableBody(entry.Body) {
+				continue
+			}
+			review.Feedback = append(review.Feedback, source.PullRequestFeedback{
+				ID:        "thread-comment:" + entry.ID,
+				ThreadID:  thread.ID,
+				Kind:      "review_thread",
+				Author:    entry.Author.Login,
+				Body:      strings.TrimSpace(entry.Body),
+				Path:      entry.Path,
+				Line:      entry.Line,
+				URL:       entry.URL,
+				CreatedAt: parseGitHubTime(entry.CreatedAt),
+			})
+		}
+	}
+	for _, entry := range item.Comments.Nodes {
+		if !actionableBody(entry.Body) {
+			continue
+		}
+		review.Feedback = append(review.Feedback, source.PullRequestFeedback{
+			ID:        "pr-comment:" + entry.ID,
+			Kind:      "comment",
+			Author:    entry.Author.Login,
+			Body:      strings.TrimSpace(entry.Body),
+			URL:       entry.URL,
+			CreatedAt: parseGitHubTime(entry.CreatedAt),
+		})
+	}
+	return review, nil
+}
+
+func (d *Driver) ReplyPullRequestFeedback(ctx context.Context, pr source.PullRequest, feedback source.PullRequestFeedback, body string) error {
+	body = source.ExternalReplyMarker + "\n\n" + strings.TrimSpace(body)
+	if strings.TrimSpace(feedback.ThreadID) != "" {
+		_, err := d.run(ctx, "api", "graphql",
+			"-f", "query="+reviewThreadReplyMutation,
+			"-f", "thread="+feedback.ThreadID,
+			"-f", "body="+body,
+		)
+		return err
+	}
+	target := strings.TrimSpace(pr.URL)
+	if target == "" {
+		target = strings.TrimSpace(pr.ExternalID)
+	}
+	if target == "" {
+		return errors.New("PR sem URL/id para responder")
+	}
+	_, err := d.run(ctx, "pr", "comment", target, "--body", body)
+	return err
+}
+
+func actionableBody(body string) bool {
+	body = strings.TrimSpace(body)
+	return body != "" && !strings.Contains(body, source.ExternalReplyMarker)
+}
+
+func pullRequestNumber(pr source.PullRequest) (int, error) {
+	if n, err := strconv.Atoi(strings.TrimSpace(pr.ExternalID)); err == nil && n > 0 {
+		return n, nil
+	}
+	parts := strings.Split(strings.TrimRight(pr.URL, "/"), "/")
+	if len(parts) > 0 {
+		if n, err := strconv.Atoi(parts[len(parts)-1]); err == nil && n > 0 {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("PR sem número: %q", pr.ExternalID)
+}
+
+func parseGitHubTime(value string) time.Time {
+	t, _ := time.Parse(time.RFC3339, value)
+	return t
+}

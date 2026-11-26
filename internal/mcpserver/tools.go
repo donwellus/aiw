@@ -121,6 +121,17 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"inputSchema": cleanSchema(false),
 			"annotations": readOnly,
 		},
+		{
+			"name":        "refine_preview",
+			"title":       "Prévia de refine",
+			"description": "Mostra o feedback, o alvo e o impacto do refine sem enfileirar nem alterar a run.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":   map[string]any{"type": "string"},
+				"target":   map[string]any{"type": "string", "enum": []string{"intake", "spec", "plan"}, "description": "Artefato mais antigo invalidado"},
+				"feedback": map[string]any{"type": "string", "description": "Texto proposto para o refine"},
+			}, "run_id", "target", "feedback"),
+			"annotations": readOnly,
+		},
 	}
 	if !allowWrite {
 		return tools
@@ -288,6 +299,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolApprove(params.Arguments)
 	case "answer":
 		return s.toolAnswer(ctx, params.Arguments)
+	case "refine_preview":
+		return s.toolRefinePreview(params.Arguments)
 	case "refine":
 		return s.toolRefine(params.Arguments)
 	case "release":
@@ -457,11 +470,42 @@ func (s *Server) toolAnswer(ctx context.Context, raw json.RawMessage) (any, *rpc
 	return value, nil
 }
 
+func (s *Server) toolRefinePreview(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID    string `json:"run_id"`
+		Target   string `json:"target"`
+		Feedback string `json:"feedback"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	target := strings.ToLower(strings.TrimSpace(args.Target))
+	if target != control.TargetIntake && target != control.TargetSpec && target != control.TargetPlan {
+		return nil, invalidParams(errors.New("target inválido (use intake, spec ou plan)"))
+	}
+	if strings.TrimSpace(args.Feedback) == "" {
+		return nil, invalidParams(errors.New("feedback vazio"))
+	}
+	preview, err := control.PreviewRefine(s.cfg, args.RunID, target, args.Feedback)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(preview)
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
+}
+
 func (s *Server) toolRefine(raw json.RawMessage) (any, *rpcError) {
 	var args struct {
 		RunID     string  `json:"run_id"`
 		Target    string  `json:"target"`
 		Feedback  string  `json:"feedback"`
+		PreviewID string  `json:"preview_id"`
 		Auto      bool    `json:"auto"`
 		BudgetUSD float64 `json:"budget_usd"`
 	}
@@ -478,6 +522,9 @@ func (s *Server) toolRefine(raw json.RawMessage) (any, *rpcError) {
 	if strings.TrimSpace(args.Feedback) == "" {
 		return nil, invalidParams(errors.New("feedback vazio"))
 	}
+	if _, err := control.ValidateRefinePreview(s.cfg, args.RunID, target, args.Feedback, args.PreviewID); err != nil {
+		return toolError(err.Error()), nil
+	}
 	if _, active := control.DaemonActive(s.cfg, 15*time.Second); !active {
 		return toolError("daemon não está ativo; inicie aiw daemon para processar refinamentos"), nil
 	}
@@ -488,6 +535,7 @@ func (s *Server) toolRefine(raw json.RawMessage) (any, *rpcError) {
 	operation, err := ops.Enqueue(control.ActionRefine, args.RunID, map[string]any{
 		"target":     target,
 		"feedback":   args.Feedback,
+		"preview_id": strings.TrimSpace(args.PreviewID),
 		"auto":       args.Auto,
 		"budget_usd": args.BudgetUSD,
 	})

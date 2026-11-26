@@ -1,6 +1,6 @@
 # ADR 027 — Refinamento de gates com target explícito
 
-- Status: aceito
+- Status: aceito (prévia obrigatória adicionada pelo ADR 031)
 - Data: 2026-11-24
 
 ## Contexto
@@ -10,6 +10,9 @@ podem usar answer: o artefato é derivado e precisa ser regenerado. Editar
 `plan.md` manualmente também é frágil, porque o plano deriva de `spec.md`.
 
 ## Decisão
+
+> Atualização: desde o ADR 031, `aiw_refine` exige `preview_id` gerado por
+> `aiw_refine_preview` e confirmação humana.
 
 1. Nova operação assíncrona `refine` e ferramenta MCP `aiw_refine`:
    - `run_id`;

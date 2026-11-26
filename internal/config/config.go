@@ -120,16 +120,18 @@ func (g *GateMode) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type DeliveryConfig struct {
-	Merge            string   `yaml:"merge"`
-	Method           string   `yaml:"method"`
-	RequireCI        *bool    `yaml:"require_ci"`
-	RequiredChecks   []string `yaml:"required_checks"`
-	CITimeout        Duration `yaml:"ci_timeout"`
-	CIPollInterval   Duration `yaml:"ci_poll_interval"`
-	MaxFixRounds     int      `yaml:"max_fix_rounds"`
-	MergeConcurrency int      `yaml:"merge_concurrency"`
-	ExternalReview   string   `yaml:"external_review"`
-	ExternalReply    string   `yaml:"external_reply"`
+	Merge             string   `yaml:"merge"`
+	Method            string   `yaml:"method"`
+	RequireCI         *bool    `yaml:"require_ci"`
+	RequiredChecks    []string `yaml:"required_checks"`
+	CITimeout         Duration `yaml:"ci_timeout"`
+	CIPollInterval    Duration `yaml:"ci_poll_interval"`
+	MaxFixRounds      int      `yaml:"max_fix_rounds"`
+	MergeConcurrency  int      `yaml:"merge_concurrency"`
+	ExternalReview    string   `yaml:"external_review"`
+	ExternalReply     string   `yaml:"external_reply"`
+	ResolveConflicts  string   `yaml:"resolve_conflicts"`
+	ConflictMaxRounds int      `yaml:"conflict_max_rounds"`
 }
 
 func (d DeliveryConfig) RequireCIEnabled() bool {
@@ -449,6 +451,12 @@ func (c *Config) applyDefaults() {
 	if c.Delivery.ExternalReply == "" {
 		c.Delivery.ExternalReply = "auto_unless_conflict"
 	}
+	if c.Delivery.ResolveConflicts == "" {
+		c.Delivery.ResolveConflicts = "auto"
+	}
+	if c.Delivery.ConflictMaxRounds == 0 {
+		c.Delivery.ConflictMaxRounds = 2
+	}
 }
 
 func (c *Config) Validate() error {
@@ -465,6 +473,21 @@ func (c *Config) Validate() error {
 	}
 	if _, ok := c.Sources[c.DefaultSource]; !ok {
 		return fmt.Errorf("fonte padrão %q não está configurada", c.DefaultSource)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Delivery.ExternalReview)) {
+	case "ignore", "consume", "require":
+	default:
+		return fmt.Errorf("delivery.external_review inválido %q (use ignore, consume ou require)", c.Delivery.ExternalReview)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Delivery.ExternalReply)) {
+	case "auto", "auto_unless_conflict", "never":
+	default:
+		return fmt.Errorf("delivery.external_reply inválido %q (use auto, auto_unless_conflict ou never)", c.Delivery.ExternalReply)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Delivery.ResolveConflicts)) {
+	case "auto", "off":
+	default:
+		return fmt.Errorf("delivery.resolve_conflicts inválido %q (use auto ou off)", c.Delivery.ResolveConflicts)
 	}
 	return nil
 }

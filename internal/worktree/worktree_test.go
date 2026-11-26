@@ -207,3 +207,61 @@ func TestRemoveSafetyAndBranches(t *testing.T) {
 		t.Fatalf("branch ainda existe: %v, %v", ok, err)
 	}
 }
+
+func TestMergeConflictResolveAndCommit(t *testing.T) {
+	ctx := context.Background()
+	repo := newRepo(t)
+	dataDir := t.TempDir()
+	wt, err := Create(ctx, repo, dataDir, "run-conflict")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("branch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wt.Commit(ctx, "aiw: branch change"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-m", "main change")
+
+	conflicts, err := wt.Merge(ctx, "main")
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if len(conflicts) != 1 || conflicts[0] != "README.md" {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	if files, err := wt.ConflictFiles(ctx); err != nil || len(files) != 1 {
+		t.Fatalf("ConflictFiles = %+v, %v", files, err)
+	}
+	if err := wt.AbortMerge(ctx); err != nil {
+		t.Fatalf("AbortMerge: %v", err)
+	}
+	if files, err := wt.ConflictFiles(ctx); err != nil || len(files) != 0 {
+		t.Fatalf("conflitos após abort = %+v, %v", files, err)
+	}
+
+	conflicts, err = wt.Merge(ctx, "main")
+	if err != nil || len(conflicts) != 1 {
+		t.Fatalf("Merge 2 = %+v, %v", conflicts, err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wt.Add(ctx, "README.md"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := wt.CommitMerge(ctx); err != nil {
+		t.Fatalf("CommitMerge: %v", err)
+	}
+	if files, err := wt.ConflictFiles(ctx); err != nil || len(files) != 0 {
+		t.Fatalf("conflitos finais = %+v, %v", files, err)
+	}
+	if _, err := wt.Head(ctx); err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+}

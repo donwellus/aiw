@@ -1,6 +1,8 @@
 package control
 
 import (
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,5 +112,83 @@ func TestPrepareRefineRejectsStartedImplementation(t *testing.T) {
 	}, map[string]string{"spec": "approved", "plan": "escalated"})
 	if _, _, err := PrepareRefine(cfg, run.ID, "spec", "Mudança tardia"); err == nil {
 		t.Fatal("deveria rejeitar refinamento depois do implement")
+	}
+}
+
+func TestPreviewRefineDoesNotMutate(t *testing.T) {
+	cfg, run := refineRun(t, "paused", "architect", map[string]string{
+		"intake": "done", "requirements": "done", "architect": "gated",
+	}, map[string]string{"intake": "approved", "spec": "approved", "plan": "escalated"})
+	runPath := filepath.Join(cfg.RunsDir(), run.ID, "run.json")
+	before, err := os.ReadFile(runPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := PreviewRefine(cfg, run.ID, "plan", "Ajuste o plano sem mudar a spec.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.PreviewID == "" || preview.Target != "plan" || preview.Stage != "architect" || preview.Status != "paused" {
+		t.Fatalf("preview = %+v", preview)
+	}
+	if len(preview.StagesReset) != 5 || preview.StagesReset[0] != "architect" {
+		t.Fatalf("stages = %+v", preview.StagesReset)
+	}
+	if len(preview.Artifacts) != 2 || preview.Artifacts[0] != "plan.md" {
+		t.Fatalf("artifacts = %+v", preview.Artifacts)
+	}
+	after, err := os.ReadFile(runPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("preview alterou run.json")
+	}
+	if _, err := os.Stat(filepath.Join(run.Worktree, ".aiw-run", "plan.md")); err != nil {
+		t.Fatalf("preview removeu plan.md: %v", err)
+	}
+	if _, err := os.Stat(preview.FeedbackFile); !os.IsNotExist(err) {
+		t.Fatalf("preview criou feedback: %v", err)
+	}
+	if _, err := ValidateRefinePreview(cfg, run.ID, "plan", "Ajuste o plano sem mudar a spec.", preview.PreviewID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateRefinePreview(cfg, run.ID, "plan", "outro feedback", preview.PreviewID); err == nil {
+		t.Fatal("feedback alterado deveria invalidar preview")
+	}
+}
+
+func TestValidateRefinePreviewInvalidatesOnRunChange(t *testing.T) {
+	cfg, run := refineRun(t, "paused", "architect", map[string]string{
+		"intake": "done", "requirements": "done", "architect": "gated",
+	}, map[string]string{"intake": "approved", "spec": "approved", "plan": "escalated"})
+	preview, err := PreviewRefine(cfg, run.ID, "plan", "Ajuste o plano.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	run.Stages[indexOfStage("architect")].Status = "done"
+	if err := pipeline.SaveRun(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateRefinePreview(cfg, run.ID, "plan", "Ajuste o plano.", preview.PreviewID); err == nil {
+		t.Fatal("mudança de estágio deveria invalidar preview")
+	}
+}
+
+func TestExecutorRejectsInvalidPreview(t *testing.T) {
+	cfg, run := refineRun(t, "paused", "architect", map[string]string{
+		"intake": "done", "requirements": "done", "architect": "gated",
+	}, map[string]string{"intake": "approved", "spec": "approved", "plan": "escalated"})
+	executor := &Executor{cfg: cfg, log: slog.Default()}
+	_, err := executor.runRefine(context.Background(), &Operation{
+		RunID: run.ID,
+		Args: map[string]any{
+			"target":     "plan",
+			"feedback":   "Ajuste o plano.",
+			"preview_id": "rp-invalido",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "preview") {
+		t.Fatalf("esperava erro de preview, obtive %v", err)
 	}
 }

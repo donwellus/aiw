@@ -1,6 +1,9 @@
 package control
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -27,34 +30,29 @@ type RefineResult struct {
 	FeedbackFile string `json:"feedback_file"`
 }
 
+type RefinePreview struct {
+	PreviewID       string            `json:"preview_id"`
+	RunID           string            `json:"run_id"`
+	Target          string            `json:"target"`
+	Status          string            `json:"status"`
+	Stage           string            `json:"stage"`
+	Gates           map[string]string `json:"gates,omitempty"`
+	GatesReset      []string          `json:"gates_reset,omitempty"`
+	StagesReset     []string          `json:"stages_reset,omitempty"`
+	Artifacts       []string          `json:"artifacts_removed,omitempty"`
+	Feedback        string            `json:"feedback"`
+	FeedbackFile    string            `json:"feedback_file"`
+	CurrentFeedback string            `json:"current_feedback,omitempty"`
+	Warnings        []string          `json:"warnings,omitempty"`
+}
+
 func PrepareRefine(cfg *config.Config, runID, target, feedback string) (*pipeline.RunState, RefineResult, error) {
-	target = strings.ToLower(strings.TrimSpace(target))
-	feedback = strings.TrimSpace(feedback)
-	if feedback == "" {
-		return nil, RefineResult{}, errors.New("feedback vazio")
-	}
-	stage, gateTargets, artifactNames, ok := refinePlan(target)
-	if !ok {
-		return nil, RefineResult{}, fmt.Errorf("target inválido %q (use intake, spec ou plan)", target)
-	}
-	run, err := pipeline.LoadRun(cfg, runID)
+	run, stage, gateTargets, artifactNames, err := loadRefineContext(cfg, runID, target, feedback)
 	if err != nil {
 		return nil, RefineResult{}, err
 	}
-	if run.Status != "paused" {
-		switch run.Status {
-		case "needs_input":
-			return nil, RefineResult{}, errors.New("run está needs_input; use aiw_answer")
-		default:
-			return nil, RefineResult{}, fmt.Errorf("run precisa estar pausada para refinar (status atual: %s)", run.Status)
-		}
-	}
-	if err := ensureNoCompletedDownstream(run); err != nil {
-		return nil, RefineResult{}, err
-	}
-	if _, err := os.Stat(run.Worktree); err != nil {
-		return nil, RefineResult{}, fmt.Errorf("worktree %s inacessível: %w", run.Worktree, err)
-	}
+	target = strings.ToLower(strings.TrimSpace(target))
+	feedback = strings.TrimSpace(feedback)
 	for _, name := range artifactNames {
 		if err := os.Remove(filepath.Join(run.Worktree, ".aiw-run", name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, RefineResult{}, err
@@ -104,6 +102,144 @@ func PrepareRefine(cfg *config.Config, runID, target, feedback string) (*pipelin
 		Stage:        stage,
 		FeedbackFile: feedbackPath,
 	}, nil
+}
+
+func PreviewRefine(cfg *config.Config, runID, target, feedback string) (*RefinePreview, error) {
+	run, stage, gateTargets, artifactNames, err := loadRefineContext(cfg, runID, target, feedback)
+	if err != nil {
+		return nil, err
+	}
+	target = strings.ToLower(strings.TrimSpace(target))
+	feedback = strings.TrimSpace(feedback)
+	feedbackFile := filepath.Join(cfg.RunsDir(), run.ID, "feedback", target+".md")
+	currentFeedback := ""
+	if data, err := os.ReadFile(feedbackFile); err == nil {
+		currentFeedback = strings.TrimSpace(string(data))
+	}
+	preview := &RefinePreview{
+		RunID:           run.ID,
+		Target:          target,
+		Status:          run.Status,
+		Stage:           stage,
+		Gates:           cloneStringMap(run.Gates),
+		GatesReset:      append([]string(nil), gateTargets...),
+		StagesReset:     stagesFrom(stage),
+		Artifacts:       append([]string(nil), artifactNames...),
+		Feedback:        feedback,
+		FeedbackFile:    feedbackFile,
+		CurrentFeedback: truncateText(currentFeedback, 4000),
+		Warnings: []string{
+			"Este preview não aprova o refine; a confirmação final é humana.",
+			"Confira o texto; o aiw não verifica a autoria do feedback.",
+		},
+	}
+	preview.PreviewID = refinePreviewID(run, target, feedback, currentFeedback)
+	return preview, nil
+}
+
+func ValidateRefinePreview(cfg *config.Config, runID, target, feedback, previewID string) (*RefinePreview, error) {
+	previewID = strings.TrimSpace(previewID)
+	if previewID == "" {
+		return nil, errors.New("preview_id obrigatório; chame aiw_refine_preview antes de refinar")
+	}
+	preview, err := PreviewRefine(cfg, runID, target, feedback)
+	if err != nil {
+		return nil, err
+	}
+	if preview.PreviewID != previewID {
+		return nil, errors.New("preview expirado ou inválido; gere um novo preview")
+	}
+	return preview, nil
+}
+
+func loadRefineContext(cfg *config.Config, runID, target, feedback string) (*pipeline.RunState, string, []string, []string, error) {
+	target = strings.ToLower(strings.TrimSpace(target))
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" {
+		return nil, "", nil, nil, errors.New("feedback vazio")
+	}
+	stage, gateTargets, artifactNames, ok := refinePlan(target)
+	if !ok {
+		return nil, "", nil, nil, fmt.Errorf("target inválido %q (use intake, spec ou plan)", target)
+	}
+	run, err := pipeline.LoadRun(cfg, runID)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	if run.Status != "paused" {
+		switch run.Status {
+		case "needs_input":
+			return nil, "", nil, nil, errors.New("run está needs_input; use aiw_answer")
+		default:
+			return nil, "", nil, nil, fmt.Errorf("run precisa estar pausada para refinar (status atual: %s)", run.Status)
+		}
+	}
+	if err := ensureNoCompletedDownstream(run); err != nil {
+		return nil, "", nil, nil, err
+	}
+	if _, err := os.Stat(run.Worktree); err != nil {
+		return nil, "", nil, nil, fmt.Errorf("worktree %s inacessível: %w", run.Worktree, err)
+	}
+	return run, stage, gateTargets, artifactNames, nil
+}
+
+func stagesFrom(stage string) []string {
+	index := indexOfStage(stage)
+	if index < 0 {
+		return nil
+	}
+	return append([]string(nil), refineStageOrder[index:]...)
+}
+
+func cloneStringMap(value map[string]string) map[string]string {
+	if value == nil {
+		return nil
+	}
+	clone := make(map[string]string, len(value))
+	for key, item := range value {
+		clone[key] = item
+	}
+	return clone
+}
+
+func truncateText(value string, max int) string {
+	if len(value) <= max {
+		return value
+	}
+	return value[:max] + "...(truncado)"
+}
+
+func refinePreviewID(run *pipeline.RunState, target, feedback, currentFeedback string) string {
+	type stageState struct {
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	stages := make([]stageState, 0, len(run.Stages))
+	for _, stage := range run.Stages {
+		stages = append(stages, stageState{Name: stage.Name, Status: stage.Status})
+	}
+	payload := struct {
+		RunID           string            `json:"run_id"`
+		Target          string            `json:"target"`
+		Feedback        string            `json:"feedback"`
+		Status          string            `json:"status"`
+		Stage           string            `json:"stage"`
+		Gates           map[string]string `json:"gates,omitempty"`
+		Stages          []stageState      `json:"stages"`
+		CurrentFeedback string            `json:"current_feedback,omitempty"`
+	}{
+		RunID:           run.ID,
+		Target:          target,
+		Feedback:        feedback,
+		Status:          run.Status,
+		Stage:           run.Stage,
+		Gates:           run.Gates,
+		Stages:          stages,
+		CurrentFeedback: currentFeedback,
+	}
+	data, _ := json.Marshal(payload)
+	sum := sha256.Sum256(data)
+	return "rp-" + hex.EncodeToString(sum[:])[:16]
 }
 
 func refinePlan(target string) (string, []string, []string, bool) {

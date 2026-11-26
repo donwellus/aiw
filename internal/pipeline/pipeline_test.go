@@ -14,6 +14,7 @@ import (
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/source/folder"
 	"github.com/donwellus/aiw/internal/telemetry"
+	"github.com/donwellus/aiw/internal/worktree"
 )
 
 func setupProject(t *testing.T, gates string) (string, *config.Config, source.Ref, *source.Task) {
@@ -455,5 +456,156 @@ func TestEvaluatePRStatus(t *testing.T) {
 	status.Mergeable = "CONFLICTING"
 	if _, _, reason := p.evaluatePRStatus(status); !strings.Contains(reason, "conflito") {
 		t.Fatalf("conflito não detectado: %q", reason)
+	}
+}
+
+func TestParseExternalVerdict(t *testing.T) {
+	verdict := parseExternalVerdict("DECISION: FIXED\nREPLY: corrigido em a.go\nDETAILS:\n- ajuste\n")
+	if verdict.Decision != "FIXED" || verdict.Reply != "corrigido em a.go" || !strings.Contains(verdict.Details, "ajuste") {
+		t.Fatalf("verdict = %+v", verdict)
+	}
+	if got := parseExternalVerdict("DECISION: no-action\n").Decision; got != "NO_ACTION" {
+		t.Fatalf("normalização = %q", got)
+	}
+	if got := parseExternalVerdict("sem formato").Decision; got != "NEEDS_CLARIFICATION" {
+		t.Fatalf("fallback = %q", got)
+	}
+}
+
+func TestEvaluateExternalReview(t *testing.T) {
+	yes := true
+	base := config.DeliveryConfig{
+		RequireCI:      &yes,
+		RequiredChecks: []string{"verify"},
+	}
+	status := prStatus{
+		State:        "OPEN",
+		Mergeable:    "MERGEABLE",
+		StatusChecks: []prCheck{{Name: "verify", Status: "COMPLETED", Conclusion: "SUCCESS"}},
+	}
+	for _, tc := range []struct {
+		mode        string
+		decision    string
+		wantReady   bool
+		wantPending bool
+	}{
+		{"consume", "", true, false},
+		{"consume", "CHANGES_REQUESTED", false, true},
+		{"consume", "REVIEW_REQUIRED", false, true},
+		{"consume", "APPROVED", true, false},
+		{"require", "", false, true},
+		{"require", "APPROVED", true, false},
+		{"ignore", "CHANGES_REQUESTED", true, false},
+	} {
+		cfg := base
+		cfg.ExternalReview = tc.mode
+		cfg.ExternalReply = "auto_unless_conflict"
+		p := &Pipeline{Cfg: &config.Config{Delivery: cfg}}
+		gotStatus := status
+		gotStatus.ReviewDecision = tc.decision
+		ready, pending, reason := p.evaluatePRStatus(gotStatus)
+		if ready != tc.wantReady || pending != tc.wantPending || reason != "" {
+			t.Fatalf("%s/%s: ready=%v pending=%v reason=%q", tc.mode, tc.decision, ready, pending, reason)
+		}
+	}
+}
+
+func TestPendingExternalFeedbackDeduplicates(t *testing.T) {
+	p := &Pipeline{Cfg: &config.Config{}}
+	run := &RunState{ExternalReview: &ExternalReviewState{Processed: []string{"a"}}}
+	feedback := []source.PullRequestFeedback{
+		{ID: "a", Body: "já tratado"},
+		{ID: "b", Body: "novo"},
+		{ID: "c", Body: "  "},
+	}
+	pending := p.pendingExternalFeedback(run, feedback)
+	if len(pending) != 1 || pending[0].ID != "b" {
+		t.Fatalf("pending = %+v", pending)
+	}
+}
+
+type fakeReviewer struct {
+	replies []string
+}
+
+func (f *fakeReviewer) ReadPullRequestReview(ctx context.Context, pr source.PullRequest) (*source.PullRequestReview, error) {
+	return &source.PullRequestReview{}, nil
+}
+
+func (f *fakeReviewer) ReplyPullRequestFeedback(ctx context.Context, pr source.PullRequest, feedback source.PullRequestFeedback, body string) error {
+	f.replies = append(f.replies, body)
+	return nil
+}
+
+func TestExternalReviewNoAction(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: false\n    plan: false\n")
+	p := New(cfg)
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{AutoApprove: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer := &fakeReviewer{}
+	trace := p.Telemetry.Start(context.Background(), telemetry.TraceInfo{ID: run.ID, Name: "test.external"})
+	defer trace.End(nil, nil)
+	wt := &worktree.Worktree{Repo: run.Repo, Path: run.Worktree, Branch: run.Branch, BaseCommit: run.BaseCommit}
+	outcome, err := p.handleExternalReview(context.Background(), run, trace, wt, reviewer, source.PullRequest{URL: "https://github.com/o/r/pull/1"}, []source.PullRequestFeedback{{ID: "thread-comment:1", ThreadID: "thread", Kind: "review_thread", Body: "já atendido"}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Handled || outcome.Fixed {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	if len(reviewer.replies) != 1 || len(run.ExternalReview.Processed) != 1 || run.ExternalReview.Processed[0] != "thread-comment:1" {
+		t.Fatalf("reviewer=%+v state=%+v", reviewer, run.ExternalReview)
+	}
+}
+
+func TestExternalReviewConflictPauses(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: false\n    plan: false\n")
+	p := New(cfg)
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{AutoApprove: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer := &fakeReviewer{}
+	trace := p.Telemetry.Start(context.Background(), telemetry.TraceInfo{ID: run.ID, Name: "test.external"})
+	defer trace.End(nil, nil)
+	wt := &worktree.Worktree{Repo: run.Repo, Path: run.Worktree, Branch: run.Branch, BaseCommit: run.BaseCommit}
+	_, err = p.handleExternalReview(context.Background(), run, trace, wt, reviewer, source.PullRequest{URL: "https://github.com/o/r/pull/1"}, []source.PullRequestFeedback{{ID: "review:1", Kind: "review", Body: "force-conflict: mude a spec"}}, 0)
+	if !errors.Is(err, ErrDeliveryPending) {
+		t.Fatalf("esperava ErrDeliveryPending, obtive %v", err)
+	}
+	if len(reviewer.replies) != 0 {
+		t.Fatalf("não deveria responder conflito: %+v", reviewer.replies)
+	}
+	if run.ExternalReview.ConflictPath == "" || len(run.ExternalReview.Processed) != 1 {
+		t.Fatalf("estado = %+v", run.ExternalReview)
+	}
+}
+
+func TestConflictDetectionAndVerdict(t *testing.T) {
+	if !prHasConflict(prStatus{Mergeable: "CONFLICTING"}) || !prHasConflict(prStatus{MergeStateStatus: "DIRTY"}) {
+		t.Fatal("conflito não detectado")
+	}
+	if prHasConflict(prStatus{Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}) {
+		t.Fatal("status limpo detectado como conflito")
+	}
+	verdict := parseConflictVerdict("DECISION: RESOLVED\nDETAILS:\npreservei os dois lados")
+	if verdict.Decision != "RESOLVED" || !strings.Contains(verdict.Details, "preservei") {
+		t.Fatalf("verdict = %+v", verdict)
+	}
+	if got := parseConflictVerdict("DECISION: NEEDS_CLARIFICATION\nDETAILS: ambíguo").Decision; got != "NEEDS_CLARIFICATION" {
+		t.Fatalf("decisão = %q", got)
+	}
+	if got := parseConflictVerdict("sem formato").Decision; got != "CONFLICT" {
+		t.Fatalf("fallback = %q", got)
 	}
 }
