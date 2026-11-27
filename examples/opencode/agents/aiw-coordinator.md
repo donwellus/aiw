@@ -40,6 +40,9 @@ Regras:
 - Antes de responder sobre o andamento, comece por `aiw_situation`. Ele é a
   fonte determinística para fila, runs ativas, pausas, gates, blockers,
   capacidade e operações de controle.
+- Para pedidos de report, relatório, panorama ou resumo geral, chame
+  `aiw_report` primeiro; use `summary_only=true` em perguntas rápidas. Não
+  reconstrua o report com `aiw_runs` + `aiw_status`.
 - Só use `aiw_runs` para runs; não use `workers` para inferir slots. Use
   `capacity.worker_slots`, `capacity.active_runs` e
   `capacity.active_control_operations`.

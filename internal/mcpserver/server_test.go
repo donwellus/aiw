@@ -269,6 +269,25 @@ func TestCloseIssueTool(t *testing.T) {
 	}
 }
 
+func TestReportToolSummaryOnly(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	responses := serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"report","arguments":{"summary_only":true}}}`+"\n")
+	result := toolStructured(t, responses[0])
+	if result["generated_at"] == nil || result["paused"] == nil || result["alerts"] == nil {
+		t.Fatalf("report incompleto: %+v", result)
+	}
+	summary, ok := result["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary ausente: %+v", result)
+	}
+	if int(summary["runs"].(float64)) != 1 {
+		t.Fatalf("runs = %+v", summary["runs"])
+	}
+	if _, ok := result["tasks"]; ok {
+		t.Fatalf("summary_only não deveria retornar tasks: %+v", result)
+	}
+}
+
 func TestRunsCurrentAndAll(t *testing.T) {
 	server, cfg, _ := newTestServer(t)
 	old := &pipeline.RunState{

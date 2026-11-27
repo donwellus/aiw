@@ -46,7 +46,7 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 		{
 			"name":        "report",
 			"title":       "Relatório do aiw",
-			"description": "Relatório completo read-only de tarefas, runs, custos, claims e alertas.",
+			"description": "Relatório completo read-only de tarefas, runs, custos, claims e alertas. Use quando o humano pedir report, relatório, panorama ou resumo geral; summary_only retorna a visão rápida.",
 			"inputSchema": objectSchema(map[string]any{
 				"summary_only": map[string]any{"type": "boolean", "description": "Retorna apenas resumo e alertas"},
 			}),
