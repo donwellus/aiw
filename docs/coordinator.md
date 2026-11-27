@@ -200,6 +200,14 @@ Coordenador:
 - A criação de issue usa a fonte ativa do daemon; o texto livre precisa ser
   estruturado antes de `prepare_issue`. Campos faltantes só podem ser omitidos
   com `allow_incomplete=true` e `acknowledged_missing` exato.
+- Imagens locais vão em `attachments` com `attachments_authorized=true`.
+  GitHub faz upload via `gh issue create --attach`; folder copia para
+  `tasks/attachments/<task-id>/`.
+- O coordinator deve mostrar os paths autorizados no preview; não pode usar
+  shell/edit para upload.
+- No `requirements`, imagens referenciadas são baixadas para
+  `.aiw-run/attachments/`; se faltarem ou falharem, a run fica `needs_input` e
+  não gera spec/plano.
 - `folder` aceita labels no frontmatter, mas não adiciona/remove labels
   dinamicamente; a seção `## Campos pendentes` é o marcador universal.
 - `refine` exige `preview_id` de `aiw_refine_preview`; o MCP revalida o token

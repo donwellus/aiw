@@ -17,6 +17,12 @@ Comentários:
 Repositório: {{.Repo}}
 Diretório de trabalho: {{.Worktree}}
 
+{{if .Attachments}}
+Imagens anexadas (leia/compare os arquivos, não apenas o texto):
+{{range .Attachments}}- {{.}}
+{{end}}
+{{end}}
+
 Sua função é fazer o intake: validar se a tarefa está pronta para implementação, explorar o repositório quando necessário e refinar o entendimento antes de gastar esforço em spec/plano.
 
 Regras:

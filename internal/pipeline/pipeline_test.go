@@ -609,3 +609,57 @@ func TestConflictDetectionAndVerdict(t *testing.T) {
 		t.Fatalf("fallback = %q", got)
 	}
 }
+
+func TestRequirementsBlocksUnresolvedVisualReference(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: false\n    plan: false\n")
+	task.Description += "\n![Wireframe](missing-wireframe.png)\n"
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{AutoApprove: true})
+	if !errors.Is(err, ErrNeedsInput) {
+		t.Fatalf("esperava ErrNeedsInput, obtive %v", err)
+	}
+	if res == nil || res.Status != "needs_input" {
+		t.Fatalf("resultado = %+v", res)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "needs_input" || run.Stage != "requirements" {
+		t.Fatalf("run = %s/%s", run.Status, run.Stage)
+	}
+	if _, err := os.Stat(filepath.Join(res.Worktree, ".aiw-run", "spec.md")); !os.IsNotExist(err) {
+		t.Fatalf("spec não deveria existir após gate visual: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(res.Worktree, ".aiw-run", "requirements-blockers.md")); err != nil {
+		t.Fatalf("blockers ausente: %v", err)
+	}
+}
+
+func TestRequirementsFetchesLocalVisualReference(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: false\n    plan: false\n")
+	if err := os.WriteFile(filepath.Join(root, "tasks", "wireframe.png"), []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task.Description += "\n![Wireframe](wireframe.png)\n"
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{AutoApprove: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != "succeeded" {
+		t.Fatalf("status = %s", res.Status)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Task.Attachments) != 1 {
+		t.Fatalf("attachments = %+v", run.Task.Attachments)
+	}
+	if _, err := os.Stat(run.Task.Attachments[0]); err != nil {
+		t.Fatal(err)
+	}
+}

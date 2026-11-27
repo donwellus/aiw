@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +26,7 @@ type Preview struct {
 	Draft        source.TaskDraft `json:"draft"`
 	Missing      []string         `json:"missing,omitempty"`
 	Warnings     []string         `json:"warnings,omitempty"`
+	Attachments  []string         `json:"attachments,omitempty"`
 	Body         string           `json:"body"`
 	PreviewID    string           `json:"preview_id"`
 }
@@ -70,6 +73,9 @@ func (s *Service) Prepare(ctx context.Context, draft source.TaskDraft) (*Preview
 	if draft.Title == "" {
 		return nil, errors.New("title é obrigatório")
 	}
+	if err := validateAttachments(draft); err != nil {
+		return nil, err
+	}
 	missing, warnings := validateDraft(s.cfg, draft)
 	draft.Pending = append([]string(nil), missing...)
 	body := source.RenderTaskBody(draft)
@@ -80,6 +86,7 @@ func (s *Service) Prepare(ctx context.Context, draft source.TaskDraft) (*Preview
 		Draft:        draft,
 		Missing:      missing,
 		Warnings:     warnings,
+		Attachments:  append([]string(nil), draft.Attachments...),
 		Body:         body,
 	}
 	preview.PreviewID = previewID(preview)
@@ -156,7 +163,56 @@ func normalizeDraft(draft source.TaskDraft, sc config.SourceConfig, cfg *config.
 	labels = append(labels, draft.Labels...)
 	draft.Labels = normalizeStringList(labels)
 	draft.Pending = nil
+	attachments := make([]string, 0, len(draft.Attachments))
+	for _, path := range draft.Attachments {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		if strings.HasPrefix(path, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
+			}
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		attachments = append(attachments, filepath.Clean(path))
+	}
+	draft.Attachments = attachments
 	return draft
+}
+
+func validateAttachments(draft source.TaskDraft) error {
+	if len(draft.Attachments) > 20 {
+		return errors.New("máximo de 20 anexos por issue")
+	}
+	if len(draft.Attachments) > 0 && !draft.AttachmentsAuthorized {
+		return errors.New("anexos exigem autorização explícita do humano (attachments_authorized=true)")
+	}
+	seen := map[string]bool{}
+	for _, path := range draft.Attachments {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("anexo %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("anexo %s não é um arquivo regular", path)
+		}
+		switch strings.ToLower(filepath.Ext(path)) {
+		case ".png", ".jpg", ".jpeg", ".webp", ".gif":
+		default:
+			return fmt.Errorf("anexo %s não é uma imagem suportada", path)
+		}
+		if info.Size() > 10*1024*1024 {
+			return fmt.Errorf("anexo %s excede 10 MB", path)
+		}
+	}
+	return nil
 }
 
 func validateDraft(cfg *config.Config, draft source.TaskDraft) ([]string, []string) {
@@ -228,13 +284,15 @@ func sameStrings(left, right []string) bool {
 
 func previewID(preview *Preview) string {
 	payload := struct {
-		Source  string           `json:"source"`
-		Draft   source.TaskDraft `json:"draft"`
-		Missing []string         `json:"missing"`
+		Source      string           `json:"source"`
+		Draft       source.TaskDraft `json:"draft"`
+		Missing     []string         `json:"missing"`
+		Attachments []string         `json:"attachments"`
 	}{
-		Source:  preview.Source,
-		Draft:   preview.Draft,
-		Missing: preview.Missing,
+		Source:      preview.Source,
+		Draft:       preview.Draft,
+		Missing:     preview.Missing,
+		Attachments: preview.Attachments,
 	}
 	data, _ := json.Marshal(payload)
 	sum := sha256.Sum256(data)

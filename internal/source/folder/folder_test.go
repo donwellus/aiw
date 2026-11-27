@@ -315,3 +315,42 @@ func TestCreateTask(t *testing.T) {
 		t.Fatalf("task criada não apareceu no filtro: %+v", refs)
 	}
 }
+
+func TestCreateAndFetchAttachments(t *testing.T) {
+	root, driver := newFixture(t)
+	image := filepath.Join(root, "wireframe.png")
+	if err := os.WriteFile(image, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task, err := driver.CreateTask(context.Background(), source.TaskDraft{
+		Title:                 "Com imagens",
+		Description:           "Compare com o wireframe.",
+		Acceptance:            []string{"Layout confere."},
+		Attachments:           []string{image},
+		AttachmentsAuthorized: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(task.Attachments) != 1 {
+		t.Fatalf("attachments = %+v", task.Attachments)
+	}
+	if _, err := os.Stat(task.Attachments[0]); err != nil {
+		t.Fatal(err)
+	}
+	fetched, err := driver.Fetch(context.Background(), source.Ref{Source: "folder", URL: filepath.Join(root, "tasks", task.ExternalID+".md")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	attachments, err := driver.FetchAttachments(context.Background(), fetched, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("attachments baixados = %+v", attachments)
+	}
+	if _, err := os.Stat(attachments[0].Path); err != nil {
+		t.Fatal(err)
+	}
+}

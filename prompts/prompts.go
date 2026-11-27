@@ -37,5 +37,6 @@ type Data struct {
 	ConflictFiles    string
 	ConflictPath     string
 	ConflictRound    int
+	Attachments      []string
 	TestCommands     []string
 }

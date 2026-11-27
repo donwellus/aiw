@@ -66,6 +66,11 @@ Regras:
   `acknowledged_missing` exato. Nunca escolha uma source manualmente.
 - `aiw_create_issue` cria na source ativa do daemon (ou `default_source` se o
   daemon estiver parado); não use `edit`/shell para isso.
+- Para anexar imagens, receba os paths locais do humano, mostre-os no preview e
+  passe `attachments` com `attachments_authorized=true` somente após autorização
+  explícita. O GitHub faz upload; folder copia para `tasks/attachments/`.
+- Se a issue mencionar uma imagem e o `requirements` não conseguir baixá-la, a
+  run deve parar em `needs_input`; nunca siga a implementação sem a referência.
 
 - Acompanhe operações assíncronas com `aiw_operations` e `aiw_operation_show`.
 - Para `needs_input`, use `aiw_questions` para mostrar as perguntas ao humano,

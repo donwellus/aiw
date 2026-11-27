@@ -255,13 +255,15 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 
 func issueDraftSchema(create bool) map[string]any {
 	properties := map[string]any{
-		"title":       map[string]any{"type": "string", "description": "Título da issue"},
-		"description": map[string]any{"type": "string", "description": "Contexto e objetivo"},
-		"acceptance":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Critérios de aceite verificáveis"},
-		"labels":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-		"priority":    map[string]any{"type": "string"},
-		"assignee":    map[string]any{"type": "string"},
-		"repo":        map[string]any{"type": "string", "description": "Repositório local/hint; default da source/workspace"},
+		"title":                  map[string]any{"type": "string", "description": "Título da issue"},
+		"description":            map[string]any{"type": "string", "description": "Contexto e objetivo"},
+		"acceptance":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Critérios de aceite verificáveis"},
+		"labels":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"priority":               map[string]any{"type": "string"},
+		"assignee":               map[string]any{"type": "string"},
+		"repo":                   map[string]any{"type": "string", "description": "Repositório local/hint; default da source/workspace"},
+		"attachments":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Caminhos locais de imagens; exigem autorização explícita"},
+		"attachments_authorized": map[string]any{"type": "boolean", "description": "Confirma que o humano autorizou explicitamente os paths"},
 	}
 	required := []string{"title"}
 	if create {

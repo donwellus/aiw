@@ -244,6 +244,12 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
   pedido em texto livre, estrutura os campos, chama `aiw_prepare_issue` e só
   cria com o `preview_id`. `description`/`acceptance` ausentes só são aceitos
   com `allow_incomplete=true` e `acknowledged_missing` exato.
+- `attachments` aceita paths locais de imagens, mas exige
+  `attachments_authorized=true`; GitHub usa `gh issue create --attach` e folder
+  copia para `tasks/attachments/<task-id>/`.
+- Imagens referenciadas na issue são baixadas para
+  `.aiw-run/attachments/` antes de `requirements`. Se a referência visual não
+  puder ser resolvida, o estágio para em `needs_input` e não gera spec/plano.
 - `aiw_refine_preview` mostra o feedback e o impacto sem alterar nada. O
   `aiw_refine` exige o `preview_id` retornado; feedback ou estado alterados
   invalidam o preview.

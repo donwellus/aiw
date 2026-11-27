@@ -68,3 +68,37 @@ func TestPreviewInvalidatesOnDraftChange(t *testing.T) {
 		t.Fatal("preview alterado deveria falhar")
 	}
 }
+
+func TestAttachmentsRequireAuthorization(t *testing.T) {
+	cfg := testConfig(t)
+	service := New(cfg)
+	ctx := context.Background()
+	image := filepath.Join(cfg.Root, "wireframe.png")
+	if err := os.WriteFile(image, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	draft := source.TaskDraft{
+		Title:       "Com anexo",
+		Description: "Compare com a imagem.",
+		Acceptance:  []string{"Layout confere."},
+		Attachments: []string{image},
+	}
+	if _, err := service.Prepare(ctx, draft); err == nil {
+		t.Fatal("anexo sem autorização deveria falhar")
+	}
+	draft.AttachmentsAuthorized = true
+	preview, err := service.Prepare(ctx, draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview.Attachments) != 1 || preview.Attachments[0] != image {
+		t.Fatalf("preview attachments = %+v", preview.Attachments)
+	}
+	result, err := service.Create(ctx, Request{Draft: draft, PreviewID: preview.PreviewID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExternalID == "" {
+		t.Fatalf("result = %+v", result)
+	}
+}

@@ -258,12 +258,18 @@ func readFile(t *testing.T, path string) string {
 
 func TestCreateTask(t *testing.T) {
 	logPath, driver := setupFakeGH(t, listFixture, viewFixture)
+	image := filepath.Join(t.TempDir(), "wireframe.png")
+	if err := os.WriteFile(image, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	task, err := driver.CreateTask(context.Background(), source.TaskDraft{
-		Title:       "Nova issue",
-		Description: "Contexto da issue.",
-		Acceptance:  []string{"O fluxo funciona."},
-		Labels:      []string{"aiw", "backend"},
-		Assignee:    "ana",
+		Title:                 "Nova issue",
+		Description:           "Contexto da issue.",
+		Acceptance:            []string{"O fluxo funciona."},
+		Labels:                []string{"aiw", "backend"},
+		Assignee:              "ana",
+		Attachments:           []string{image},
+		AttachmentsAuthorized: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -275,7 +281,7 @@ func TestCreateTask(t *testing.T) {
 		t.Fatalf("conteúdo = %+v", task)
 	}
 	log := readFile(t, logPath)
-	for _, want := range []string{"issue create --repo owner/repo", "--title Nova issue", "--label aiw", "--label backend", "--assignee ana"} {
+	for _, want := range []string{"issue create --repo owner/repo", "--title Nova issue", "--attach " + image, "--label aiw", "--label backend", "--assignee ana"} {
 		if !strings.Contains(log, want) {
 			t.Fatalf("log sem %q: %s", want, log)
 		}

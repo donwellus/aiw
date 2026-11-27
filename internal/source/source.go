@@ -66,14 +66,16 @@ type Caps struct {
 }
 
 type TaskDraft struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Acceptance  []string `json:"acceptance,omitempty"`
-	Labels      []string `json:"labels,omitempty"`
-	Priority    string   `json:"priority,omitempty"`
-	Assignee    string   `json:"assignee,omitempty"`
-	Repo        string   `json:"repo,omitempty"`
-	Pending     []string `json:"pending,omitempty"`
+	Title                 string   `json:"title"`
+	Description           string   `json:"description,omitempty"`
+	Acceptance            []string `json:"acceptance,omitempty"`
+	Labels                []string `json:"labels,omitempty"`
+	Priority              string   `json:"priority,omitempty"`
+	Assignee              string   `json:"assignee,omitempty"`
+	Repo                  string   `json:"repo,omitempty"`
+	Pending               []string `json:"pending,omitempty"`
+	Attachments           []string `json:"attachments,omitempty"`
+	AttachmentsAuthorized bool     `json:"attachments_authorized,omitempty"`
 }
 
 type TaskCreator interface {
@@ -187,7 +189,7 @@ type Labeler interface {
 }
 
 type AttachmentFetcher interface {
-	FetchAttachments(ctx context.Context, task *Task) ([]Attachment, error)
+	FetchAttachments(ctx context.Context, task *Task, destDir string) ([]Attachment, error)
 }
 
 type Attachment struct {

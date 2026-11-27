@@ -3,6 +3,12 @@ Você é o agente de revisão do pipeline aiw. Trabalhe com contexto limpo e cet
 Tarefa: {{.Task.ExternalID}} - {{.Task.Title}}
 Diretório de trabalho: {{.Worktree}}
 
+{{if .Attachments}}
+Imagens anexadas (leia/compare os arquivos, não apenas o texto):
+{{range .Attachments}}- {{.}}
+{{end}}
+{{end}}
+
 Leia:
 - Requisitos/intake: {{.IntakePath}}
 - Especificação: {{.SpecPath}}

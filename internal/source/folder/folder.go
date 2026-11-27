@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func (d *Driver) Name() string {
 }
 
 func (d *Driver) Caps() source.Caps {
-	return source.Caps{WriteBack: d.cfg.WriteBackEnabled(), Create: true}
+	return source.Caps{Attachments: true, WriteBack: d.cfg.WriteBackEnabled(), Create: true}
 }
 
 func (d *Driver) List(ctx context.Context, f source.Filter) ([]source.Ref, error) {
@@ -156,6 +157,19 @@ func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*sourc
 		return nil, err
 	}
 	id := d.newTaskID(title)
+	copied, err := d.copyAttachments(id, draft.Attachments)
+	if err != nil {
+		return nil, err
+	}
+	body := source.RenderTaskBody(draft)
+	if len(copied) > 0 {
+		var refs strings.Builder
+		refs.WriteString("\n## Referências visuais\n\n")
+		for _, attachment := range copied {
+			fmt.Fprintf(&refs, "![%s](%s)\n", attachment.Name, attachment.Relative)
+		}
+		body += refs.String()
+	}
 	header, err := yaml.Marshal(frontmatter{
 		ID:         id,
 		Title:      title,
@@ -169,7 +183,6 @@ func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*sourc
 	if err != nil {
 		return nil, err
 	}
-	body := source.RenderTaskBody(draft)
 	content := "---\n" + string(header) + "---\n\n" + body
 	path := filepath.Join(d.base, id+".md")
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
@@ -189,7 +202,53 @@ func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*sourc
 	}
 	task.Source = d.name
 	task.ClaimKey = d.claimKey(task.ExternalID)
+	for _, attachment := range copied {
+		task.Attachments = append(task.Attachments, attachment.Path)
+	}
 	return task, nil
+}
+
+type copiedAttachment struct {
+	Name     string
+	Relative string
+	Path     string
+}
+
+func (d *Driver) copyAttachments(taskID string, paths []string) ([]copiedAttachment, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	dir := filepath.Join(d.base, "attachments", taskID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	copied := make([]copiedAttachment, 0, len(paths))
+	for index, sourcePath := range paths {
+		ext := filepath.Ext(sourcePath)
+		name := fmt.Sprintf("imagem-%d%s", index+1, ext)
+		target := filepath.Join(dir, name)
+		input, err := os.Open(sourcePath)
+		if err != nil {
+			return nil, err
+		}
+		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			input.Close()
+			return nil, err
+		}
+		_, copyErr := io.Copy(output, input)
+		input.Close()
+		closeErr := output.Close()
+		if copyErr != nil {
+			return nil, copyErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		relative := filepath.Join("attachments", taskID, name)
+		copied = append(copied, copiedAttachment{Name: name, Relative: filepath.ToSlash(relative), Path: target})
+	}
+	return copied, nil
 }
 
 func (d *Driver) newTaskID(title string) string {

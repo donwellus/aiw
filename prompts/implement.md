@@ -4,6 +4,12 @@ Tarefa: {{.Task.ExternalID}} - {{.Task.Title}}
 Repositório: {{.Repo}}
 Diretório de trabalho: {{.Worktree}}
 
+{{if .Attachments}}
+Imagens anexadas (leia/compare os arquivos, não apenas o texto):
+{{range .Attachments}}- {{.}}
+{{end}}
+{{end}}
+
 Leia antes de implementar:
 - Especificação: {{.SpecPath}}
 - Plano: {{.PlanPath}}

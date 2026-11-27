@@ -626,6 +626,11 @@ func (p *Pipeline) runIntakeStage(ctx context.Context, run *RunState, trace tele
 }
 
 func (p *Pipeline) runValidatedStage(ctx context.Context, run *RunState, trace telemetry.Trace, stage, artifact, validator, gateName string, budget float64, opts Options) error {
+	if stage == "requirements" {
+		if err := p.prepareRequirementsAttachments(ctx, run); err != nil {
+			return err
+		}
+	}
 	attempts := p.Cfg.Defaults.MaxGateRounds
 	if attempts < 1 {
 		attempts = 1
@@ -1547,6 +1552,7 @@ func (p *Pipeline) promptData(run *RunState) prompts.Data {
 		DiffPath:       p.workArtifact(run, "diff.patch"),
 		TestLogPath:    p.workArtifact(run, "test.log"),
 		TestCommands:   p.Cfg.Workspace.TestCommands,
+		Attachments:    append([]string(nil), run.Task.Attachments...),
 		HumanFeedback:  p.humanFeedback(run, run.Stage),
 	}
 }

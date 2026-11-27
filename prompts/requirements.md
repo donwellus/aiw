@@ -14,6 +14,12 @@ Critérios de aceite fornecidos:
 Repositório: {{.Repo}}
 Diretório de trabalho: {{.Worktree}}
 
+{{if .Attachments}}
+Imagens anexadas (leia/compare os arquivos, não apenas o texto):
+{{range .Attachments}}- {{.}}
+{{end}}
+{{end}}
+
 Leia primeiro o intake: {{.IntakePath}}
 Use os critérios de aceite e o escopo do intake como fonte de verdade.
 

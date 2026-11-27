@@ -94,7 +94,7 @@ func New(name, root string, cfg config.SourceConfig) (*Driver, error) {
 func (d *Driver) Name() string { return d.name }
 
 func (d *Driver) Caps() source.Caps {
-	return source.Caps{Comments: true, Pagination: true, WriteBack: true, Create: true}
+	return source.Caps{Comments: true, Attachments: true, Pagination: true, WriteBack: true, Create: true}
 }
 
 type pullRequest struct {
@@ -110,7 +110,18 @@ func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*sourc
 		return nil, errors.New("título da issue é obrigatório")
 	}
 	body := source.RenderTaskBody(draft)
+	if len(draft.Attachments) > 0 {
+		var refs strings.Builder
+		refs.WriteString("\n## Referências visuais\n\n")
+		for index, path := range draft.Attachments {
+			fmt.Fprintf(&refs, "![Imagem %d](%s)\n", index+1, path)
+		}
+		body += refs.String()
+	}
 	args := []string{"issue", "create", "--repo", d.repo, "--title", title, "--body", body}
+	for _, path := range draft.Attachments {
+		args = append(args, "--attach", path)
+	}
 	for _, label := range draft.Labels {
 		if strings.TrimSpace(label) != "" {
 			args = append(args, "--label", strings.TrimSpace(label))
@@ -147,6 +158,7 @@ func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*sourc
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		ContentHash:   source.HashContent(title, body, draft.Acceptance),
+		Attachments:   append([]string(nil), draft.Attachments...),
 		ProviderMeta:  map[string]string{"repo": d.repo, "number": number, "state": "OPEN"},
 	}
 	return task, nil
