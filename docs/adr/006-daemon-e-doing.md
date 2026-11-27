@@ -11,11 +11,14 @@ O pool `aiw work` processa um lote e encerra. Para uso contínuo, precisamos de 
 
 ### Daemon (`aiw daemon`)
 
-1. Loop de polling com `--interval` (default 60s), reutilizando `runner.Collect` e `runner.Work`.
+1. Coletor de polling com `--interval` (default 60s) e pool fixo de workers,
+   reutilizando `runner.Collect`; novas tasks podem ser enfileiradas enquanto
+   workers processam tasks longas (ADR 036).
 2. Sem resumo global fixo: uma linha por tarefa concluída, uma linha por ciclo com trabalho, e `/status` JSON opcional (`--status-addr`) com ciclos, totais por status, runs em andamento e claims.
 3. `--once` executa um único ciclo (cron/testes).
 4. Nunca abre prompt; gates humanos pausam a tarefa, liberam o slot e o daemon segue.
-5. SIGINT/SIGTERM cancela runs em andamento, libera claims e devolve tarefas canceladas ao inbox.
+5. SIGINT/SIGTERM drena: termina o estágio atual, pausa a run no próximo
+   boundary e libera o claim; segundo SIGINT/timeout cancela (ADR 016/036).
 6. `paused` e `needs_input` ficam fora da fila até `resume` ou mudança de hash do conteúdo.
 
 ### Pasta doing (opt-in)

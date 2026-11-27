@@ -349,13 +349,13 @@ aiw daemon --once --workers 2 --auto          # um ciclo, útil para cron/testes
 aiw daemon --status-addr 127.0.0.1:8787       # /healthz e /status em JSON
 ```
 
-- Faz polling da fonte a cada `--interval`, coleta tarefas elegíveis e usa o mesmo pool/claim do `aiw work`.
+- Coletor independente faz polling da fonte a cada `--interval` e alimenta um pool fixo de workers; novas tarefas usam slots livres mesmo enquanto tasks longas rodam.
 - Sem resumo global fixo: imprime uma linha por tarefa concluída e uma linha por ciclo quando há trabalho.
 - `/status` traz um resumo vivo (ciclos, totais por status, runs em andamento, claims); `/healthz` responde `ok`.
 - Nunca abre prompt; gates humanos pausam a tarefa e liberam o slot.
 - `aiw pause` sem run-id ativa o **modo idle**: o daemon para de coletar, mantém `/status`, `/healthz` e webhooks vivos e volta sozinho quando `aiw resume --all` remove `.aiw/PAUSE`.
 - Tarefas `paused`/`needs_input` ficam fora da fila até `resume` ou mudança de conteúdo.
-- SIGINT/SIGTERM drena o que está em andamento; `--drain-timeout` limita a espera e o segundo SIGINT força.
+- SIGINT/SIGTERM para de coletar e pausa cada run no próximo boundary de estágio; o run fica `paused`, o claim é liberado e o daemon encerra. `--drain-timeout` limita estágios longos e o segundo SIGINT força o cancelamento.
 - `--pause-poll` (default 10s) controla a checagem da pausa global no `work` e no idle do daemon.
 - **Webhooks GitHub** (`--webhook-addr`): o endpoint `/webhooks/github` valida HMAC (`X-Hub-Signature-256`), deduplica por `X-GitHub-Delivery`, responde 202 e acorda o ciclo do daemon. O payload não vira task direto: o daemon reconsulta a issue via `gh`. Use HTTPS/reverse proxy ou túnel em dev; o polling continua como fallback. Requer `webhook_secret_env` (default `GITHUB_WEBHOOK_SECRET`).
 
@@ -426,7 +426,7 @@ aiw resume <run-id>          # retoma pausa/gate/cancelamento
   - `work` e `run` recusam iniciar novas tarefas;
   - `daemon` fica **idle** (não coleta), mantendo status/webhooks, e volta quando o marker some;
   - `resume <run-id>` é bloqueado; use `resume --all` para limpar o marker e retomar paused/canceladas.
-- Em `work`/`daemon`, o **primeiro SIGINT** drena: para de enfileirar, termina o run atual e sai; `--drain-timeout` (default 5m) limita a espera.
+- Em `work`/`daemon`, o **primeiro SIGINT** drena: para de enfileirar, termina o estágio atual e pausa a run antes do próximo; `--drain-timeout` (default 5m) limita estágios longos.
 - **Segundo SIGINT** ou timeout força o cancelamento; runs canceladas podem ser retomadas com `aiw resume`.
 - Tarefas ainda não iniciadas permanecem no inbox/fila.
 
