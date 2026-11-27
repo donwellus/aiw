@@ -256,9 +256,31 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 			warned := map[string]bool{}
 			cycleFailures := 0
 			idleLogged := false
+			var scheduledMu sync.Mutex
+			scheduled := map[string]bool{}
+			pool := run.StartPool(ctx, workers, 0, drain.drain, func(outcome runner.Outcome) {
+				scheduledMu.Lock()
+				delete(scheduled, outcome.TaskID)
+				scheduledMu.Unlock()
+				stats.add(outcome)
+				if outcome.Status == "failed" {
+					cycleFailures++
+				}
+				printWorkOutcome(out, asJSON, outcome)
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
+			})
+			defer func() {
+				pool.Stop()
+				pool.Wait()
+			}()
+
 		loop:
 			for !drain.Draining() {
 				if pause.Active(cfg.DataDir()) {
+					pool.SetPaused(true)
 					if once {
 						fmt.Fprintln(logOut, "[daemon] pausa global ativa; --once sem ciclo")
 						break
@@ -275,7 +297,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 					continue
 				}
 				idleLogged = false
-				cycleFailures = 0
+				pool.SetPaused(false)
 				candidates, skips, collectErr := run.Collect(ctx, src, filter, repoFlag, force, maxTasks)
 				if collectErr != nil {
 					if ctx.Err() != nil {
@@ -297,9 +319,19 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 					}
 					printWorkOutcome(out, asJSON, skip)
 				}
-				jobs := make([]runner.Job, 0, len(candidates))
+				accepted := 0
 				for _, candidate := range candidates {
-					jobs = append(jobs, runner.Job{
+					if candidate.Task == nil || candidate.Task.ExternalID == "" {
+						continue
+					}
+					key := candidate.Task.ExternalID
+					scheduledMu.Lock()
+					already := scheduled[key]
+					scheduledMu.Unlock()
+					if already {
+						continue
+					}
+					job := runner.Job{
 						Task:  candidate.Task,
 						Ref:   candidate.Ref,
 						Repo:  candidate.Repo,
@@ -310,30 +342,41 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 							BudgetUSD:        budget,
 							CreatePR:         createPR,
 							DisableWriteBack: noWriteBack,
+							Drain:            drain.drain,
 						},
-					})
-				}
-				if len(jobs) > 0 && !drain.Draining() && !pause.Active(cfg.DataDir()) {
-					if err := run.MarkQueued(candidates); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "[daemon] aviso: falha ao registrar fila: %v\n", err)
 					}
-					fmt.Fprintf(logOut, "[daemon] ciclo: %d tarefa(s)\n", len(jobs))
-					cycleCh, stopCycle := cycleDrain(ctx, drain.drain, cfg.DataDir(), pausePoll)
-					run.Work(ctx, jobs, workers, cycleCh, func(outcome runner.Outcome) {
-						stats.add(outcome)
-						if outcome.Status == "failed" {
-							cycleFailures++
-						}
-						printWorkOutcome(out, asJSON, outcome)
+					scheduledMu.Lock()
+					scheduled[key] = true
+					scheduledMu.Unlock()
+					var markErr error
+					submitted := pool.Submit(job, func() error {
+						markErr = run.MarkQueued([]runner.Candidate{candidate})
+						return markErr
 					})
-					stopCycle()
+					if !submitted {
+						scheduledMu.Lock()
+						delete(scheduled, key)
+						scheduledMu.Unlock()
+						if markErr != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "[daemon] aviso: falha ao registrar fila em %s: %v\n", key, markErr)
+						}
+						if drain.Draining() || pause.Active(cfg.DataDir()) {
+							break
+						}
+						continue
+					}
+					accepted++
 				}
-				stats.cycle(len(jobs))
+				if accepted > 0 {
+					fmt.Fprintf(logOut, "[daemon] ciclo: %d tarefa(s)\n", accepted)
+				}
+				stats.cycle(accepted)
 
-				if drain.Draining() {
+				if once {
+					pool.WaitAll()
 					break
 				}
-				if once {
+				if drain.Draining() {
 					break
 				}
 				select {
@@ -378,44 +421,6 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute, "tempo máximo para drenar runs em andamento após SIGINT")
 	cmd.Flags().DurationVar(&pausePoll, "pause-poll", 10*time.Second, "intervalo de checagem da pausa global no modo idle")
 	return cmd
-}
-
-func cycleDrain(ctx context.Context, signal <-chan struct{}, dataDir string, interval time.Duration) (<-chan struct{}, func()) {
-	if interval <= 0 {
-		interval = 10 * time.Second
-	}
-	ch := make(chan struct{})
-	done := make(chan struct{})
-	var closeOnce sync.Once
-	closeCh := func() { closeOnce.Do(func() { close(ch) }) }
-	go func() {
-		if pause.Active(dataDir) {
-			closeCh()
-			return
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				closeCh()
-				return
-			case <-signal:
-				closeCh()
-				return
-			case <-done:
-				return
-			case <-ticker.C:
-				if pause.Active(dataDir) {
-					closeCh()
-					return
-				}
-			}
-		}
-	}()
-	var stopOnce sync.Once
-	stop := func() { stopOnce.Do(func() { close(done) }) }
-	return ch, stop
 }
 
 func startDaemonStatus(ctx context.Context, addr string, stats *daemonStats, store *state.Store) (func(), string, error) {

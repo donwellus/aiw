@@ -286,6 +286,30 @@ func TestIntakeRiskyLabelEscalatesToHuman(t *testing.T) {
 	}
 }
 
+func TestRunDrainPausesAtStageBoundary(t *testing.T) {
+	root, cfg, ref, task := setupProject(t, "    spec: auto\n    plan: auto\n")
+	drain := make(chan struct{})
+	close(drain)
+	p := New(cfg)
+	p.Telemetry = telemetry.NewRecorder()
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{Drain: drain})
+	if !errors.Is(err, ErrPauseRequested) {
+		t.Fatalf("esperava ErrPauseRequested, obtive %v", err)
+	}
+	run, err := LoadRun(cfg, res.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "paused" {
+		t.Fatalf("status = %q", run.Status)
+	}
+	for _, stage := range run.Stages {
+		if stage.Status != "pending" {
+			t.Fatalf("nenhum estágio deveria iniciar: %+v", run.Stages)
+		}
+	}
+}
+
 func TestValidatorEscalatesAfterMaxRounds(t *testing.T) {
 	root, cfg, ref, task := setupProject(t, "    spec: auto\n    plan: auto\n")
 	task.Title += " validator-rejects"

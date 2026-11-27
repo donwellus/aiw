@@ -98,6 +98,15 @@ func (r *Runner) Check(task *source.Task, force bool) (Outcome, bool) {
 			out.Reason = "aguardando input; edite a tarefa na fonte e execute novamente"
 			return out, true
 		}
+	case "running":
+		if record.RunID != "" {
+			if _, active := r.store.FindClaimByRunID(record.RunID); active {
+				out.Status = "running"
+				out.RunID = record.RunID
+				out.Reason = "já está em execução"
+				return out, true
+			}
+		}
 	case "pr_open":
 		out.Status = "pr_open"
 		out.RunID = record.RunID
@@ -490,50 +499,15 @@ func (r *Runner) cancelMarkerPath(runID string) string {
 }
 
 func (r *Runner) Work(ctx context.Context, jobs []Job, workers int, drain <-chan struct{}, onOutcome func(Outcome)) []Outcome {
-	if workers < 1 {
-		workers = 1
+	if len(jobs) == 0 {
+		return nil
 	}
-	queue := make(chan Job, len(jobs))
+	pool := r.StartPool(ctx, workers, len(jobs), drain, onOutcome)
 	for _, job := range jobs {
-		queue <- job
+		job.Options.Drain = drain
+		if !pool.Submit(job, nil) {
+			break
+		}
 	}
-	close(queue)
-
-	var mu sync.Mutex
-	var outcomes []Outcome
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-drain:
-					return
-				default:
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-drain:
-					return
-				case job, ok := <-queue:
-					if !ok {
-						return
-					}
-					outcome := r.Execute(ctx, Request(job))
-					mu.Lock()
-					outcomes = append(outcomes, outcome)
-					if onOutcome != nil {
-						onOutcome(outcome)
-					}
-					mu.Unlock()
-				}
-			}
-		}()
-	}
-	wg.Wait()
-	return outcomes
+	return pool.WaitAll()
 }

@@ -50,6 +50,23 @@ func TestCheckSucceededSameHash(t *testing.T) {
 	}
 }
 
+func TestCheckRunningActiveClaim(t *testing.T) {
+	run, store := newTestRunner(t)
+	task := testTask("001")
+	claim, ok, err := store.Claim("folder", "001", "run-1", time.Hour)
+	if err != nil || !ok {
+		t.Fatalf("Claim: %v %v", ok, err)
+	}
+	defer func() { _ = claim.Release() }()
+	if err := store.Put(state.TaskRecord{Source: "folder", ID: "001", Status: "running", RunID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, skip := run.Check(task, false)
+	if !skip || outcome.Status != "running" || outcome.RunID != "run-1" {
+		t.Fatalf("outcome inesperado: %+v skip=%v", outcome, skip)
+	}
+}
+
 func TestCheckPaused(t *testing.T) {
 	run, store := newTestRunner(t)
 	task := testTask("001")
@@ -177,6 +194,40 @@ func TestWorkDrainFinishesInFlight(t *testing.T) {
 	if got := atomic.LoadInt32(&started); got != 1 {
 		t.Fatalf("jobs iniciados = %d, esperado 1", got)
 	}
+}
+
+func TestPoolProcessesQuickJobWhileLongRuns(t *testing.T) {
+	run, _ := newTestRunner(t)
+	started := make(chan string, 2)
+	releaseLong := make(chan struct{})
+	run.execute = func(ctx context.Context, req Request) Outcome {
+		started <- req.Task.ExternalID
+		if req.Task.ExternalID == "long" {
+			<-releaseLong
+		}
+		return Outcome{TaskID: req.Task.ExternalID, Status: "succeeded"}
+	}
+	pool := run.StartPool(context.Background(), 2, 0, nil, nil)
+	defer func() {
+		pool.Stop()
+		pool.Wait()
+	}()
+	if !pool.Submit(Job{Task: testTask("long"), Repo: "/tmp"}, nil) {
+		t.Fatal("não submeteu job long")
+	}
+	if !pool.Submit(Job{Task: testTask("quick"), Repo: "/tmp"}, nil) {
+		t.Fatal("não submeteu job quick")
+	}
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-started:
+			seen[id] = true
+		case <-time.After(time.Second):
+			t.Fatalf("jobs iniciados = %v", seen)
+		}
+	}
+	close(releaseLong)
 }
 
 func TestMarkQueued(t *testing.T) {

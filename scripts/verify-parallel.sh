@@ -590,7 +590,7 @@ set -e
 assert_eq "$DAEMON_CODE" 0 "daemon encerrado após resume --all"
 pass "pausa global: work pausa, run bloqueado, daemon idle e resume --all"
 
-# 6) Drain: SIGINT espera o run em andamento e deixa o próximo no inbox.
+# 6) Drain: SIGINT pausa no próximo boundary de estágio e deixa o próximo no inbox.
 DIR="$WORK/drain"
 new_project "$DIR"
 write_task "$DIR" "drain-a" "Tarefa drain A"
@@ -610,17 +610,19 @@ wait "$PID"
 DRAIN_CODE=$?
 set -e
 assert_eq "$DRAIN_CODE" 0 "drain gracioso"
+PAUSED=$(grep -c '"status":"paused"' "$DIR/out.jsonl" || true)
 SUCCEEDED=$(grep -c '"status":"succeeded"' "$DIR/out.jsonl" || true)
 DONE=$(find "$DIR/tasks/done" -name '*.md' | wc -l | tr -d ' ')
 INBOX=$(find "$DIR/tasks" -maxdepth 1 -name '*.md' | wc -l | tr -d ' ')
 DOING=$(find "$DIR/tasks/doing" -name '*.md' | wc -l | tr -d ' ')
 CLAIMS=$(find "$DIR/.aiw/state/claims" -type f -name '*.lock' | wc -l | tr -d ' ')
-assert_eq "$SUCCEEDED" 1 "run em andamento concluída no drain"
-assert_eq "$DONE" 1 "uma tarefa concluída"
+assert_eq "$PAUSED" 1 "run em andamento pausada no drain"
+assert_eq "$SUCCEEDED" 0 "nenhuma tarefa concluída no drain"
+assert_eq "$DONE" 0 "nenhuma tarefa em done"
 assert_eq "$INBOX" 1 "uma tarefa pendente no inbox"
-assert_eq "$DOING" 0 "doing vazio após drain"
+assert_eq "$DOING" 1 "uma tarefa pausada em doing"
 assert_eq "$CLAIMS" 0 "claims após drain"
-pass "drain: SIGINT conclui o run atual e preserva a fila"
+pass "drain: SIGINT pausa no boundary e preserva a fila"
 
 # 7) Daemon: um ciclo batch contínuo com o mesmo pool.
 DIR="$WORK/daemon"
@@ -639,6 +641,33 @@ assert_eq "$DONE" 2 "tarefas em done pelo daemon"
 assert_eq "$DOING" 0 "doing vazio após daemon"
 assert_eq "$CLAIMS" 0 "claims após daemon"
 pass "daemon: ciclo batch, pool e write-back"
+
+# 6b) Daemon contínuo: preenche slot livre enquanto uma tarefa longa roda.
+DIR="$WORK/daemon-scheduler"
+new_project "$DIR"
+write_task "$DIR" "scheduler-long" "Tarefa longa"
+export AIW_SLOW_SECONDS=0.5
+"$AIW" --root "$DIR" daemon --workers 2 --interval 100ms --auto --json >"$DIR/out.jsonl" 2>"$DIR/err.log" &
+SCHED_PID=$!
+for i in $(seq 1 100); do
+  RUNS=$( { find "$DIR/.aiw/runs" -name run.json 2>/dev/null || true; } | wc -l | tr -d ' ')
+  [ "$RUNS" -ge 1 ] && break
+  sleep 0.1
+done
+write_task "$DIR" "scheduler-quick" "Tarefa rápida"
+for i in $(seq 1 100); do
+  RUNS=$( { find "$DIR/.aiw/runs" -name run.json 2>/dev/null || true; } | wc -l | tr -d ' ')
+  [ "$RUNS" -ge 2 ] && break
+  sleep 0.1
+done
+assert_ge "$RUNS" 2 "nova tarefa iniciada enquanto a longa roda"
+kill -INT "$SCHED_PID"
+set +e
+wait "$SCHED_PID"
+SCHED_CODE=$?
+set -e
+assert_eq "$SCHED_CODE" 0 "daemon contínuo drenado"
+pass "daemon contínuo preenche slots com tarefas novas"
 
 # 6) Daemon: endpoints /healthz e /status.
 DIR="$WORK/status"

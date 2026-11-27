@@ -44,6 +44,7 @@ type Options struct {
 	BudgetUSD        float64
 	CreatePR         bool
 	DisableWriteBack bool
+	Drain            <-chan struct{}
 	OnDelivery       func(*RunState) error
 }
 
@@ -287,7 +288,7 @@ func (p *Pipeline) execute(ctx context.Context, run *RunState, trace telemetry.T
 		if p.cancelRequested(dir) {
 			return context.Canceled
 		}
-		if p.pauseRequested(dir) {
+		if p.pauseRequested(dir, opts) {
 			return ErrPauseRequested
 		}
 		st.StartedAt = time.Now().UTC()
@@ -1697,9 +1698,16 @@ func (p *Pipeline) cancelRequested(runDir string) bool {
 	return err == nil
 }
 
-func (p *Pipeline) pauseRequested(runDir string) bool {
+func (p *Pipeline) pauseRequested(runDir string, opts Options) bool {
 	if pause.Active(p.Cfg.DataDir()) {
 		return true
+	}
+	if opts.Drain != nil {
+		select {
+		case <-opts.Drain:
+			return true
+		default:
+		}
 	}
 	_, err := os.Stat(filepath.Join(runDir, PauseMarker))
 	return err == nil
