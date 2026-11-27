@@ -286,4 +286,75 @@ func TestCreateTask(t *testing.T) {
 			t.Fatalf("log sem %q: %s", want, log)
 		}
 	}
+	for _, forbidden := range []string{"Referências visuais", "![Imagem"} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("body não deveria conter %q: %s", forbidden, log)
+		}
+	}
+}
+
+func TestDownloadableAttachmentRefs(t *testing.T) {
+	urls, skipped := downloadableAttachmentRefs([]string{
+		"/home/donwellus/image.png",
+		"https://github.com/user-attachments/assets/abc",
+		"https://raw.githubusercontent.com/owner/repo/main/a.jpg",
+	})
+	if len(urls) != 2 || len(skipped) != 1 || skipped[0] != "/home/donwellus/image.png" {
+		t.Fatalf("urls=%+v skipped=%+v", urls, skipped)
+	}
+}
+
+func TestFetchAttachmentsRejectsOnlyLocalPaths(t *testing.T) {
+	_, driver := setupFakeGH(t, listFixture, viewFixture)
+	task := &source.Task{Description: "![wireframe](/home/donwellus/wireframe.png)"}
+	if _, err := driver.FetchAttachments(context.Background(), task, t.TempDir()); err == nil {
+		t.Fatal("paths locais sem URL deveriam falhar")
+	}
+}
+
+func TestCloseIssue(t *testing.T) {
+	logPath, driver := setupFakeGH(t, listFixture, viewFixture)
+	if err := driver.CloseIssue(context.Background(), source.Ref{Source: "github", ID: "1"}, "duplicada"); err != nil {
+		t.Fatal(err)
+	}
+	log := readFile(t, logPath)
+	if !strings.Contains(log, "issue close 1 --repo owner/repo --comment duplicada") {
+		t.Fatalf("fechamento ausente: %s", log)
+	}
+}
+
+func TestCloseIssueSkipsAlreadyClosedIssue(t *testing.T) {
+	closedFixture := strings.Replace(viewFixture, `"state":"OPEN"`, `"state":"CLOSED"`, 1)
+	logPath, driver := setupFakeGH(t, listFixture, closedFixture)
+	if err := driver.CloseIssue(context.Background(), source.Ref{Source: "github", ID: "1"}, "duplicada"); err != nil {
+		t.Fatal(err)
+	}
+	if log := readFile(t, logPath); strings.Contains(log, "issue close") {
+		t.Fatalf("issue já fechada não deveria executar close: %s", log)
+	}
+}
+
+func TestAllowedAttachmentHost(t *testing.T) {
+	for _, host := range []string{
+		"github.com",
+		"raw.githubusercontent.com",
+		"github-production-user-asset-6210df.s3.amazonaws.com",
+		"github-production-release-asset-6210df.s3.amazonaws.com",
+	} {
+		if !allowedAttachmentHost(host) {
+			t.Fatalf("host deveria ser permitido: %s", host)
+		}
+	}
+	for _, host := range []string{
+		"evil.example.com",
+		"s3.amazonaws.com",
+		"github-production-user-asset.evil.s3.amazonaws.com",
+	} {
+		if allowedAttachmentHost(host) {
+			t.Fatalf("host não deveria ser permitido: %s", host)
+		}
+	}
+	if !s3AttachmentHost("github-production-user-asset-6210df.s3.amazonaws.com") {
+		t.Fatal("host de user asset deveria ser identificado como S3")
+	}
 }

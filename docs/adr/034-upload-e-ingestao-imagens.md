@@ -21,6 +21,8 @@ Também não havia como criar uma issue com imagens pelo coordinator.
 2. **Download na execução**:
    - `source.AttachmentFetcher` recebe `destDir` e devolve paths locais;
    - GitHub baixa `user-attachments` com token do `gh` e hosts permitidos;
+   - redirects para `github-production-{user,release}-asset-*.s3.amazonaws.com`
+     são aceitos, mas o token do GitHub não é enviado ao S3;
    - folder resolve paths locais;
    - arquivos vão para `.aiw-run/attachments/`.
 3. **Gate em requirements**:

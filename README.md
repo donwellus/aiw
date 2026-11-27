@@ -238,15 +238,22 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
 - `aiw_situation` distingue fila `queued`, runs ativas, pausas com gate/blockers,
   operações de controle e capacidade real (`worker_slots` × runs ativas).
 - Controle: pause, resume assíncrono, cancel, answer, refine, approve, release,
-  clean e create_issue. `refine`, `release` e `clean_apply` pedem confirmação no
-  OpenCode; `clean_apply` também exige `confirm=true`.
+  clean, create_issue e close_issue. `refine`, `close_issue`, `release` e
+  `clean_apply` pedem confirmação no OpenCode; `clean_apply` também exige
+  `confirm=true`.
 - `aiw_create_issue` cria na fonte ativa do daemon. O coordinator recebe o
   pedido em texto livre, estrutura os campos, chama `aiw_prepare_issue` e só
-  cria com o `preview_id`. `description`/`acceptance` ausentes só são aceitos
-  com `allow_incomplete=true` e `acknowledged_missing` exato.
+  cria com o `preview_id`; o draft exato fica no cache do MCP, sem reenviar os
+  campos. `description`/`acceptance` ausentes só são aceitos com
+  `allow_incomplete=true` e `acknowledged_missing` exato.
 - `attachments` aceita paths locais de imagens, mas exige
   `attachments_authorized=true`; GitHub usa `gh issue create --attach` e folder
   copia para `tasks/attachments/<task-id>/`.
+- `aiw_close_issue` fecha a issue/tarefa com motivo. Se houver run ativa, exige
+  `cancel_run=true`, cancela primeiro e só fecha quando o cancelamento estiver
+  confirmado; `closed=false` significa que ainda há cancelamento pendente.
+  No folder, a task vai para `done_dir`; se já estiver em `done`, a operação é
+  idempotente, e os anexos permanecem em `tasks/attachments/<task-id>/`.
 - Imagens referenciadas na issue são baixadas para
   `.aiw-run/attachments/` antes de `requirements`. Se a referência visual não
   puder ser resolvida, o estágio para em `needs_input` e não gera spec/plano.

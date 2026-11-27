@@ -242,6 +242,17 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
 		},
 		map[string]any{
+			"name":        "close_issue",
+			"title":       "Fechar issue",
+			"description": "Fecha uma issue/tarefa na fonte ativa. Se houver run ativa, exige cancel_run=true e só fecha depois do cancelamento confirmado.",
+			"inputSchema": objectSchema(map[string]any{
+				"issue_id":   map[string]any{"type": "string", "description": "ID da issue/tarefa"},
+				"reason":     map[string]any{"type": "string", "description": "Motivo publicado no fechamento"},
+				"cancel_run": map[string]any{"type": "boolean", "description": "Cancela a run ativa antes; o fechamento só ocorre após confirmação"},
+			}, "issue_id", "reason"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
+		},
+		map[string]any{
 			"name":        "operation_cancel",
 			"title":       "Cancelar operação",
 			"description": "Cancela uma operação assíncrona pendente ou em execução.",
@@ -254,7 +265,14 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 }
 
 func issueDraftSchema(create bool) map[string]any {
-	properties := map[string]any{
+	if create {
+		return objectSchema(map[string]any{
+			"preview_id":           map[string]any{"type": "string", "description": "ID retornado por prepare_issue"},
+			"allow_incomplete":     map[string]any{"type": "boolean", "description": "Permite criar com campos faltantes de propósito"},
+			"acknowledged_missing": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Lista exata de campos faltantes confirmados"},
+		}, "preview_id")
+	}
+	return objectSchema(map[string]any{
 		"title":                  map[string]any{"type": "string", "description": "Título da issue"},
 		"description":            map[string]any{"type": "string", "description": "Contexto e objetivo"},
 		"acceptance":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Critérios de aceite verificáveis"},
@@ -264,15 +282,7 @@ func issueDraftSchema(create bool) map[string]any {
 		"repo":                   map[string]any{"type": "string", "description": "Repositório local/hint; default da source/workspace"},
 		"attachments":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Caminhos locais de imagens; exigem autorização explícita"},
 		"attachments_authorized": map[string]any{"type": "boolean", "description": "Confirma que o humano autorizou explicitamente os paths"},
-	}
-	required := []string{"title"}
-	if create {
-		properties["preview_id"] = map[string]any{"type": "string", "description": "ID retornado por prepare_issue"}
-		properties["allow_incomplete"] = map[string]any{"type": "boolean", "description": "Permite criar com campos faltantes de propósito"}
-		properties["acknowledged_missing"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Lista exata de campos faltantes confirmados"}
-		required = append(required, "preview_id")
-	}
-	return objectSchema(properties, required...)
+	}, "title")
 }
 
 func cleanSchema(apply bool) map[string]any {
@@ -355,6 +365,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolRefine(params.Arguments)
 	case "create_issue":
 		return s.toolCreateIssue(ctx, params.Arguments)
+	case "close_issue":
+		return s.toolCloseIssue(ctx, params.Arguments)
 	case "release":
 		return s.toolRelease(ctx, params.Arguments)
 	case "clean_apply":
@@ -368,7 +380,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue":
+	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue":
 		return true
 	default:
 		return false
@@ -422,6 +434,7 @@ func (s *Server) toolPrepareIssue(ctx context.Context, raw json.RawMessage) (any
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
+	s.rememberIssuePreview(preview)
 	value, err := toolResult(preview)
 	if err != nil {
 		return nil, invalidParams(err)
@@ -431,7 +444,6 @@ func (s *Server) toolPrepareIssue(ctx context.Context, raw json.RawMessage) (any
 
 func (s *Server) toolCreateIssue(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
 	var args struct {
-		source.TaskDraft
 		PreviewID           string   `json:"preview_id"`
 		AllowIncomplete     bool     `json:"allow_incomplete"`
 		AcknowledgedMissing []string `json:"acknowledged_missing"`
@@ -439,12 +451,74 @@ func (s *Server) toolCreateIssue(ctx context.Context, raw json.RawMessage) (any,
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, invalidParams(err)
 	}
+	preview, err := s.loadIssuePreview(args.PreviewID)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
 	result, err := taskcreate.New(s.cfg).Create(ctx, taskcreate.Request{
-		Draft:               args.TaskDraft,
-		PreviewID:           args.PreviewID,
+		Draft:               preview.Draft,
+		PreviewID:           preview.PreviewID,
 		AllowIncomplete:     args.AllowIncomplete,
 		AcknowledgedMissing: args.AcknowledgedMissing,
 	})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	s.forgetIssuePreview(args.PreviewID)
+	value, err := toolResult(result)
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
+}
+
+func (s *Server) rememberIssuePreview(preview *taskcreate.Preview) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	if s.previews == nil {
+		s.previews = map[string]cachedIssuePreview{}
+	}
+	now := time.Now().UTC()
+	for id, cached := range s.previews {
+		if now.Sub(cached.createdAt) > time.Hour {
+			delete(s.previews, id)
+		}
+	}
+	s.previews[preview.PreviewID] = cachedIssuePreview{preview: *preview, createdAt: now}
+}
+
+func (s *Server) loadIssuePreview(id string) (*taskcreate.Preview, error) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	id = strings.TrimSpace(id)
+	cached, ok := s.previews[id]
+	if !ok || id == "" {
+		return nil, errors.New("preview expirado ou inválido; gere um novo preview")
+	}
+	if time.Since(cached.createdAt) > time.Hour {
+		delete(s.previews, id)
+		return nil, errors.New("preview expirado ou inválido; gere um novo preview")
+	}
+	preview := cached.preview
+	return &preview, nil
+}
+
+func (s *Server) forgetIssuePreview(id string) {
+	s.previewMu.Lock()
+	defer s.previewMu.Unlock()
+	delete(s.previews, id)
+}
+
+func (s *Server) toolCloseIssue(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		IssueID   string `json:"issue_id"`
+		Reason    string `json:"reason"`
+		CancelRun bool   `json:"cancel_run"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := control.CloseIssue(ctx, s.cfg, s.store, args.IssueID, args.Reason, args.CancelRun)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}

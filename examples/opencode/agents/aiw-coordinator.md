@@ -20,6 +20,9 @@ permissions:
   - action: aiw_refine
     resource: "*"
     effect: ask
+  - action: aiw_close_issue
+    resource: "*"
+    effect: ask
   - action: aiw_release
     resource: "*"
     effect: ask
@@ -66,6 +69,10 @@ Regras:
   `acknowledged_missing` exato. Nunca escolha uma source manualmente.
 - `aiw_create_issue` cria na source ativa do daemon (ou `default_source` se o
   daemon estiver parado); não use `edit`/shell para isso.
+- `aiw_close_issue` só deve ser usado quando o humano pedir explicitamente e
+  sempre com motivo. Se houver run ativa, use `cancel_run=true`; se o retorno
+  indicar `closed=false`/cancelamento pendente, não diga que fechou e tente de
+  novo depois. Fechar nunca deve ocorrer antes do cancelamento confirmado.
 - Para anexar imagens, receba os paths locais do humano, mostre-os no preview e
   passe `attachments` com `attachments_authorized=true` somente após autorização
   explícita. O GitHub faz upload; folder copia para `tasks/attachments/`.

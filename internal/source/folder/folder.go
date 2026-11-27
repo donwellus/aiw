@@ -350,6 +350,31 @@ func (d *Driver) Release(ctx context.Context, ref source.Ref) error {
 	return d.MarkPending(ctx, ref)
 }
 
+func (d *Driver) CloseIssue(ctx context.Context, ref source.Ref, reason string) error {
+	if !d.cfg.WriteBackEnabled() {
+		return errors.New("write-back desabilitado na fonte folder")
+	}
+	if d.done == "" {
+		return errors.New("fonte folder sem done_dir para fechar tarefa")
+	}
+	path, err := d.locate(ref)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		if findByID(d.done, ref.ID) != "" {
+			return nil
+		}
+		return errors.New("tarefa não encontrada para fechar")
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		if err := appendCommentOnce(path, "aiw: fechada: "+reason); err != nil {
+			return err
+		}
+	}
+	return moveFile(path, d.done)
+}
+
 func (d *Driver) Comment(ctx context.Context, ref source.Ref, body string) error {
 	if !d.cfg.WriteBackEnabled() {
 		return nil
@@ -361,6 +386,24 @@ func (d *Driver) Comment(ctx context.Context, ref source.Ref, body string) error
 	if path == "" {
 		return errors.New("tarefa não encontrada para comentário")
 	}
+	return appendComment(path, body)
+}
+
+func appendCommentOnce(path, body string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	body = strings.TrimSpace(body)
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == body {
+			return nil
+		}
+	}
+	return appendComment(path, body)
+}
+
+func appendComment(path, body string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err

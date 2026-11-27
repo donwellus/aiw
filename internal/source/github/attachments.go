@@ -26,10 +26,14 @@ func (d *Driver) FetchAttachments(ctx context.Context, task *source.Task, destDi
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return nil, err
 	}
+	urls, skipped := downloadableAttachmentRefs(refs)
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("a issue não tem URL de anexo baixável; referências locais não são acessíveis pelo worker: %s", strings.Join(skipped, ", "))
+	}
 	tokenBytes, _ := exec.CommandContext(ctx, d.ghBin, "auth", "token").Output()
 	token := strings.TrimSpace(string(tokenBytes))
-	attachments := make([]source.Attachment, 0, len(refs))
-	for index, ref := range refs {
+	attachments := make([]source.Attachment, 0, len(urls))
+	for index, ref := range urls {
 		attachment, err := downloadAttachment(ctx, ref, token, destDir, index+1)
 		if err != nil {
 			return nil, fmt.Errorf("anexo %s: %w", ref, err)
@@ -40,6 +44,20 @@ func (d *Driver) FetchAttachments(ctx context.Context, task *source.Task, destDi
 		task.Attachments = append(task.Attachments, attachment.Path)
 	}
 	return attachments, nil
+}
+
+func downloadableAttachmentRefs(refs []string) ([]string, []string) {
+	urls := make([]string, 0, len(refs))
+	skipped := make([]string, 0)
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+			urls = append(urls, ref)
+		} else if ref != "" {
+			skipped = append(skipped, ref)
+		}
+	}
+	return urls, skipped
 }
 
 func downloadAttachment(ctx context.Context, ref, token, destDir string, index int) (source.Attachment, error) {
@@ -59,17 +77,20 @@ func downloadAttachment(ctx context.Context, ref, token, destDir string, index i
 		return source.Attachment{}, err
 	}
 	request.Header.Set("Accept", "image/*")
-	if token != "" {
+	if token != "" && !s3AttachmentHost(parsed.Hostname()) {
 		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(next *http.Request, via []*http.Request) error {
-			if !allowedAttachmentHost(next.URL.Hostname()) {
-				return fmt.Errorf("redirect de anexo para host não permitido: %s", next.URL.Hostname())
+			host := next.URL.Hostname()
+			if !allowedAttachmentHost(host) {
+				return fmt.Errorf("redirect de anexo para host não permitido: %s", host)
 			}
-			if token != "" {
+			if token != "" && !s3AttachmentHost(host) {
 				next.Header.Set("Authorization", "Bearer "+token)
+			} else {
+				next.Header.Del("Authorization")
 			}
 			return nil
 		},
@@ -108,8 +129,17 @@ func allowedAttachmentHost(host string) bool {
 	case "github.com", "www.github.com", "raw.githubusercontent.com", "user-images.githubusercontent.com", "private-user-images.githubusercontent.com", "objects.githubusercontent.com":
 		return true
 	default:
+		return s3AttachmentHost(host)
+	}
+}
+
+func s3AttachmentHost(host string) bool {
+	host = strings.ToLower(host)
+	if !strings.HasSuffix(host, ".s3.amazonaws.com") {
 		return false
 	}
+	return strings.HasPrefix(host, "github-production-user-asset-") ||
+		strings.HasPrefix(host, "github-production-release-asset-")
 }
 
 func attachmentExtension(path, contentType string) string {

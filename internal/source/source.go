@@ -183,6 +183,10 @@ type Commenter interface {
 	Comment(ctx context.Context, ref Ref, body string) error
 }
 
+type IssueCloser interface {
+	CloseIssue(ctx context.Context, ref Ref, reason string) error
+}
+
 type Labeler interface {
 	AddLabels(ctx context.Context, ref Ref, labels []string) error
 	RemoveLabels(ctx context.Context, ref Ref, labels []string) error

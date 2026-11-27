@@ -354,3 +354,73 @@ func TestCreateAndFetchAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCloseIssueMovesToDone(t *testing.T) {
+	root, driver := newFixture(t)
+	ref := source.Ref{Source: "folder", ID: "001"}
+	if err := driver.CloseIssue(context.Background(), ref, "duplicada"); err != nil {
+		t.Fatal(err)
+	}
+	closed := filepath.Join(root, "tasks", "done", "001.md")
+	data, err := os.ReadFile(closed)
+	if err != nil {
+		t.Fatalf("tarefa não foi para done: %v", err)
+	}
+	if !strings.Contains(string(data), "aiw: fechada: duplicada") {
+		t.Fatalf("motivo do fechamento ausente:\n%s", data)
+	}
+}
+
+func TestCloseIssueAlreadyDoneIsIdempotent(t *testing.T) {
+	root, driver := newFixture(t)
+	ref := source.Ref{Source: "folder", ID: "001"}
+	if err := driver.CloseIssue(context.Background(), ref, "duplicada"); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.CloseIssue(context.Background(), ref, "duplicada"); err != nil {
+		t.Fatalf("segundo fechamento deveria ser idempotente: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "tasks", "done"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "001") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("arquivos fechados para 001 = %d, esperado 1", count)
+	}
+}
+
+func TestCloseIssueKeepsAttachments(t *testing.T) {
+	root, driver := newFixture(t)
+	attachment := filepath.Join(root, "tasks", "attachments", "001", "wireframe.png")
+	mustWrite(t, attachment, "png")
+	if err := driver.CloseIssue(context.Background(), source.Ref{Source: "folder", ID: "001"}, "concluída"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(attachment); err != nil {
+		t.Fatalf("anexo deveria permanecer: %v", err)
+	}
+}
+
+func TestAppendCommentOnceDoesNotDuplicate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "task.md")
+	mustWrite(t, path, "corpo\n")
+	if err := appendCommentOnce(path, "aiw: fechada: duplicada"); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendCommentOnce(path, "aiw: fechada: duplicada"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(data), "aiw: fechada: duplicada"); count != 1 {
+		t.Fatalf("comentário apareceu %d vezes:\n%s", count, data)
+	}
+}

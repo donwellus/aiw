@@ -110,6 +110,7 @@ Controle:
 | `aiw_sources` | lista fontes configuradas, fonte ativa e suporte a criação |
 | `aiw_prepare_issue` | valida e formata draft de issue; não cria |
 | `aiw_create_issue` | cria issue na fonte ativa; exige `preview_id` |
+| `aiw_close_issue` | fecha issue com motivo; exige confirmação e cancelamento prévio de run ativa |
 
 `resume` não bloqueia: o daemon executa e o coordenador acompanha:
 
@@ -169,7 +170,7 @@ Coordenador:
 Você: pode.
 
 Coordenador:
-  [aiw_create_issue {preview_id: "ip-...", title: "...", description: "...", acceptance: ["..."]}]
+  [aiw_create_issue {preview_id: "ip-..."}]
   Issue criada: #...
 
 Você: e o que falhou?
@@ -196,7 +197,7 @@ Coordenador:
 ## Segurança
 
 - O agente nega `edit`, `shell` e `subagent`.
-- `refine`, `release` e `clean_apply` pedem confirmação no OpenCode.
+- `refine`, `close_issue`, `release` e `clean_apply` pedem confirmação no OpenCode.
 - A criação de issue usa a fonte ativa do daemon; o texto livre precisa ser
   estruturado antes de `prepare_issue`. Campos faltantes só podem ser omitidos
   com `allow_incomplete=true` e `acknowledged_missing` exato.
@@ -212,6 +213,9 @@ Coordenador:
   dinamicamente; a seção `## Campos pendentes` é o marcador universal.
 - `refine` exige `preview_id` de `aiw_refine_preview`; o MCP revalida o token
   antes de enfileirar e o executor revalida antes de aplicar.
+- `close_issue` exige motivo. Com run ativa, use `cancel_run=true`; se retornar
+  `closed=false`, aguarde o cancelamento e tente novamente; não feche issue com
+  PR aberto.
 - `clean_apply` também exige `confirm=true` no MCP.
 - O coordenador não faz merge, push ou deploy.
 - Workers continuam sujeitos a claims, worktrees, gates e permissões do aiw.

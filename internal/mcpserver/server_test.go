@@ -215,7 +215,7 @@ func TestWriteTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "questions", "situation"} {
+	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "questions", "situation"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente", want)
 		}
@@ -242,6 +242,30 @@ func TestWriteTools(t *testing.T) {
 	}
 	if responses[4].Error == nil || responses[4].Error.Code != -32602 {
 		t.Fatalf("clean_apply sem confirm deveria falhar: %+v", responses[4])
+	}
+}
+
+func TestCloseIssueTool(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	server.allowWrite = true
+	cfg.DefaultSource = "folder"
+	enabled := true
+	cfg.Sources = map[string]config.SourceConfig{
+		"folder": {Driver: "folder", Path: "./tasks", DoneDir: "./tasks/done", WriteBack: &enabled},
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.Root, "tasks", "done"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.Root, "tasks", "task-1.md"), []byte("---\nid: task-1\ntitle: Tarefa\n---\ncorpo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	responses := serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"close_issue","arguments":{"issue_id":"task-1","reason":"duplicada"}}}`+"\n")
+	result := toolStructured(t, responses[0])
+	if result["closed"] != true {
+		t.Fatalf("close_issue = %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Root, "tasks", "done", "task-1.md")); err != nil {
+		t.Fatalf("task não foi fechada: %v", err)
 	}
 }
 
@@ -439,12 +463,7 @@ func TestPrepareAndCreateIssue(t *testing.T) {
 		t.Fatalf("preview = %+v", prepared)
 	}
 
-	createArgs := map[string]any{
-		"preview_id":  previewID,
-		"title":       "Nova issue",
-		"description": "Contexto completo da issue.",
-		"acceptance":  []string{"O fluxo funciona."},
-	}
+	createArgs := map[string]any{"preview_id": previewID}
 	createPayload, _ := json.Marshal(createArgs)
 	created := toolStructured(t, serve(t, server, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_issue","arguments":`+string(createPayload)+`}}`+"\n")[0])
 	if created["source"] != "folder" || created["external_id"] == "" {
@@ -477,9 +496,7 @@ func TestCreateIssueRequiresIncompleteAcknowledgement(t *testing.T) {
 		t.Fatalf("missing = %+v", missing)
 	}
 
-	blockedPayload, _ := json.Marshal(map[string]any{
-		"preview_id": previewID, "title": "Issue sem aceite", "description": "Contexto suficiente.",
-	})
+	blockedPayload, _ := json.Marshal(map[string]any{"preview_id": previewID})
 	blocked := serve(t, server, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_issue","arguments":`+string(blockedPayload)+`}}`+"\n")[0]
 	var blockedResult struct {
 		IsError bool `json:"isError"`
@@ -489,8 +506,7 @@ func TestCreateIssueRequiresIncompleteAcknowledgement(t *testing.T) {
 	}
 
 	allowedPayload, _ := json.Marshal(map[string]any{
-		"preview_id": previewID, "title": "Issue sem aceite", "description": "Contexto suficiente.",
-		"allow_incomplete": true, "acknowledged_missing": []string{"acceptance"},
+		"preview_id": previewID, "allow_incomplete": true, "acknowledged_missing": []string{"acceptance"},
 	})
 	allowed := toolStructured(t, serve(t, server, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_issue","arguments":`+string(allowedPayload)+`}}`+"\n")[0])
 	if allowed["external_id"] == "" {

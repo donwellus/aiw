@@ -8,9 +8,12 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/donwellus/aiw/internal/config"
 	"github.com/donwellus/aiw/internal/state"
+	"github.com/donwellus/aiw/internal/taskcreate"
 )
 
 const protocolVersion = "2025-06-18"
@@ -29,10 +32,25 @@ type Server struct {
 	in         io.Reader
 	out        io.Writer
 	ready      bool
+	previewMu  sync.Mutex
+	previews   map[string]cachedIssuePreview
+}
+
+type cachedIssuePreview struct {
+	preview   taskcreate.Preview
+	createdAt time.Time
 }
 
 func New(cfg *config.Config, store *state.Store, version string, allowWrite bool, in io.Reader, out io.Writer) *Server {
-	return &Server{cfg: cfg, store: store, version: version, allowWrite: allowWrite, in: in, out: out}
+	return &Server{
+		cfg:        cfg,
+		store:      store,
+		version:    version,
+		allowWrite: allowWrite,
+		in:         in,
+		out:        out,
+		previews:   map[string]cachedIssuePreview{},
+	}
 }
 
 type request struct {
@@ -144,7 +162,7 @@ func (s *Server) initialize(raw json.RawMessage) (map[string]any, error) {
 	instructions := "Control plane read-only do aiw. Use aiw_status, aiw_report, aiw_runs, aiw_run_show e aiw_events para inspecionar o estado. Não há ferramentas de escrita nesta versão."
 	if s.allowWrite {
 		title = "aiw control plane"
-		instructions = "Control plane do aiw com leitura e controle. Use pause, resume, approve, release, clean e operations. Resume é assíncrono: acompanhe pelo operation_id. Para criar issues, use sources, prepare_issue e só então create_issue com o preview_id; campos faltantes exigem allow_incomplete e acknowledged_missing. Para refinar, use refine_preview, mostre o preview ao humano e só enfileire refine com o preview_id após confirmação explícita. Peça confirmação antes de ações destrutivas."
+		instructions = "Control plane do aiw com leitura e controle. Use pause, resume, approve, release, clean e operations. Resume é assíncrono: acompanhe pelo operation_id. Para criar issues, use sources, prepare_issue e só então create_issue com o preview_id; campos faltantes exigem allow_incomplete e acknowledged_missing. close_issue exige motivo e cancelamento confirmado de run ativa. Para refinar, use refine_preview, mostre o preview ao humano e só enfileire refine com o preview_id após confirmação explícita. Peça confirmação antes de ações destrutivas."
 	}
 	return map[string]any{
 		"protocolVersion": version,

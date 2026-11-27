@@ -110,14 +110,6 @@ func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*sourc
 		return nil, errors.New("título da issue é obrigatório")
 	}
 	body := source.RenderTaskBody(draft)
-	if len(draft.Attachments) > 0 {
-		var refs strings.Builder
-		refs.WriteString("\n## Referências visuais\n\n")
-		for index, path := range draft.Attachments {
-			fmt.Fprintf(&refs, "![Imagem %d](%s)\n", index+1, path)
-		}
-		body += refs.String()
-	}
 	args := []string{"issue", "create", "--repo", d.repo, "--title", title, "--body", body}
 	for _, path := range draft.Attachments {
 		args = append(args, "--attach", path)
@@ -376,6 +368,22 @@ func (d *Driver) Release(ctx context.Context, ref source.Ref) error {
 
 func (d *Driver) Comment(ctx context.Context, ref source.Ref, body string) error {
 	_, err := d.run(ctx, "issue", "comment", ref.ID, "--repo", d.repo, "--body", body)
+	return err
+}
+
+func (d *Driver) CloseIssue(ctx context.Context, ref source.Ref, reason string) error {
+	if !d.cfg.WriteBackEnabled() {
+		return errors.New("write-back desabilitado na fonte github")
+	}
+	task, err := d.Fetch(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(task.ProviderMeta["state"], "CLOSED") {
+		return nil
+	}
+	number := strings.TrimPrefix(strings.TrimSpace(ref.ID), "#")
+	_, err = d.run(ctx, "issue", "close", number, "--repo", d.repo, "--comment", reason)
 	return err
 }
 
