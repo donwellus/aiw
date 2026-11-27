@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -68,7 +69,7 @@ func (d *Driver) Name() string {
 }
 
 func (d *Driver) Caps() source.Caps {
-	return source.Caps{WriteBack: d.cfg.WriteBackEnabled()}
+	return source.Caps{WriteBack: d.cfg.WriteBackEnabled(), Create: true}
 }
 
 func (d *Driver) List(ctx context.Context, f source.Filter) ([]source.Ref, error) {
@@ -141,6 +142,85 @@ func (d *Driver) scan(ctx context.Context, f source.Filter, all bool) ([]source.
 		refs = refs[:f.Limit]
 	}
 	return refs, nil
+}
+
+func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*source.Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	title := strings.TrimSpace(draft.Title)
+	if title == "" {
+		return nil, errors.New("título da tarefa é obrigatório")
+	}
+	if err := os.MkdirAll(d.base, 0o755); err != nil {
+		return nil, err
+	}
+	id := d.newTaskID(title)
+	header, err := yaml.Marshal(frontmatter{
+		ID:         id,
+		Title:      title,
+		Repo:       strings.TrimSpace(draft.Repo),
+		Labels:     draft.Labels,
+		Priority:   strings.TrimSpace(draft.Priority),
+		Assignee:   strings.TrimSpace(draft.Assignee),
+		Acceptance: draft.Acceptance,
+		Status:     "todo",
+	})
+	if err != nil {
+		return nil, err
+	}
+	body := source.RenderTaskBody(draft)
+	content := "---\n" + string(header) + "---\n\n" + body
+	path := filepath.Join(d.base, id+".md")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	task, err := ParseFile(path)
+	if err != nil {
+		return nil, err
+	}
+	task.Source = d.name
+	task.ClaimKey = d.claimKey(task.ExternalID)
+	return task, nil
+}
+
+func (d *Driver) newTaskID(title string) string {
+	slug := slugify(title)
+	timestamp := time.Now().UTC().Format("20060102-150405")
+	base := timestamp + "-" + slug
+	for index := 1; ; index++ {
+		id := base
+		if index > 1 {
+			id = fmt.Sprintf("%s-%d", base, index)
+		}
+		if _, err := os.Stat(filepath.Join(d.base, id+".md")); errors.Is(err, os.ErrNotExist) {
+			return id
+		}
+	}
+}
+
+var taskSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+func slugify(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = taskSlug.ReplaceAllString(value, "-")
+	value = strings.Trim(value, "-")
+	if value == "" {
+		value = "task"
+	}
+	runes := []rune(value)
+	if len(runes) > 48 {
+		value = strings.Trim(string(runes[:48]), "-")
+	}
+	return value
 }
 
 func (d *Driver) Fetch(ctx context.Context, ref source.Ref) (*source.Task, error) {

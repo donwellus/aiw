@@ -234,12 +234,16 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
   `shell` e `subagent`.
 - Leitura: `aiw_situation`, `aiw_status`, `aiw_report`, `aiw_runs`,
   `aiw_run_show`, `aiw_events`, `aiw_daemon_status`, `aiw_operations`,
-  `aiw_clean_preview`, `aiw_refine_preview`.
+  `aiw_clean_preview`, `aiw_refine_preview`, `aiw_sources`, `aiw_prepare_issue`.
 - `aiw_situation` distingue fila `queued`, runs ativas, pausas com gate/blockers,
   operações de controle e capacidade real (`worker_slots` × runs ativas).
-- Controle: pause, resume assíncrono, cancel, answer, refine, approve, release
-  e clean. `refine`, `release` e `clean_apply` pedem confirmação no OpenCode;
-  `clean_apply` também exige `confirm=true`.
+- Controle: pause, resume assíncrono, cancel, answer, refine, approve, release,
+  clean e create_issue. `refine`, `release` e `clean_apply` pedem confirmação no
+  OpenCode; `clean_apply` também exige `confirm=true`.
+- `aiw_create_issue` cria na fonte ativa do daemon. O coordinator recebe o
+  pedido em texto livre, estrutura os campos, chama `aiw_prepare_issue` e só
+  cria com o `preview_id`. `description`/`acceptance` ausentes só são aceitos
+  com `allow_incomplete=true` e `acknowledged_missing` exato.
 - `aiw_refine_preview` mostra o feedback e o impacto sem alterar nada. O
   `aiw_refine` exige o `preview_id` retornado; feedback ou estado alterados
   invalidam o preview.
@@ -281,7 +285,8 @@ implement → test → review
 - O PR gera `delivery.external_id`/`delivery.status=pr_open`; o PR guard impede que uma nova run seja criada para uma issue que já tem PR aberto.
 - `aiw merge <run-id>` adota PRs existentes (inclusive de runs antigas) e reconcilia o estado local para `succeeded`.
 - `folder` não tem PR: nenhum estado `pr_open` e nenhuma chamada de PR é feita.
-- CI falhou, conflito ou PR não mergeável → run pausa no estágio `deliver` com motivo; nada é mergeado sem `--admin`.
+- CI falhou, conflito ou PR não mergeável → a etapa de delivery resolve conflitos automaticamente; nada é mergeado sem `--admin`.
+- Conflito de merge é resolvido no mesmo loop do review externo, com merge da base na branch, corretor dedicado, testes e push; `spec.md`/`plan.md`/intake pausam para decisão humana.
 - O merge é serializado por repositório (`merge_concurrency`, default 1). O merge usa `Closes #N`; a issue fecha no merge.
 - `external_review` aceita `ignore`, `consume` ou `require`:
   - `ignore`: não lê reviews externos (padrão solo);
@@ -299,6 +304,7 @@ Limitações desta versão:
 - Conflitos de merge pausam; não há rebase automático nem merge queue avançada.
 - Review externo é síncrono no worker e respeita `ci_timeout`; esperar aprovação humana ocupa o slot de delivery.
 - Conflito de review externo com requisitos/spec/plano pausa a run; não há merge nem resposta automática nesse caso.
+- Conflitos de merge usam merge da base na branch, sem force-push; limite `conflict_max_rounds`.
 - A resolução automática de conflito de merge não executa código de PR externo; atua no worktree da run do aiw.
 
 ### Paralelismo (`aiw work`)

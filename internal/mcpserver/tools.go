@@ -16,6 +16,9 @@ import (
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/report"
 	"github.com/donwellus/aiw/internal/runview"
+	"github.com/donwellus/aiw/internal/source"
+	"github.com/donwellus/aiw/internal/sources"
+	"github.com/donwellus/aiw/internal/taskcreate"
 )
 
 func toolDefinitions(allowWrite bool) []map[string]any {
@@ -132,6 +135,20 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			}, "run_id", "target", "feedback"),
 			"annotations": readOnly,
 		},
+		{
+			"name":        "sources",
+			"title":       "Fontes configuradas",
+			"description": "Lista fontes configuradas, a fonte ativa e quais suportam criação de tarefas.",
+			"inputSchema": objectSchema(map[string]any{}),
+			"annotations": readOnly,
+		},
+		{
+			"name":        "prepare_issue",
+			"title":       "Preparar issue",
+			"description": "Valida e formata um draft de issue sem criar nada; retorna campos faltantes e preview_id.",
+			"inputSchema": issueDraftSchema(false),
+			"annotations": readOnly,
+		},
 	}
 	if !allowWrite {
 		return tools
@@ -218,6 +235,13 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
 		},
 		map[string]any{
+			"name":        "create_issue",
+			"title":       "Criar issue",
+			"description": "Cria uma issue/tarefa na fonte ativa após validar o draft. Campos incompletos exigem allow_incomplete e acknowledged_missing.",
+			"inputSchema": issueDraftSchema(true),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
+		},
+		map[string]any{
 			"name":        "operation_cancel",
 			"title":       "Cancelar operação",
 			"description": "Cancela uma operação assíncrona pendente ou em execução.",
@@ -227,6 +251,26 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
 		},
 	)
+}
+
+func issueDraftSchema(create bool) map[string]any {
+	properties := map[string]any{
+		"title":       map[string]any{"type": "string", "description": "Título da issue"},
+		"description": map[string]any{"type": "string", "description": "Contexto e objetivo"},
+		"acceptance":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Critérios de aceite verificáveis"},
+		"labels":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		"priority":    map[string]any{"type": "string"},
+		"assignee":    map[string]any{"type": "string"},
+		"repo":        map[string]any{"type": "string", "description": "Repositório local/hint; default da source/workspace"},
+	}
+	required := []string{"title"}
+	if create {
+		properties["preview_id"] = map[string]any{"type": "string", "description": "ID retornado por prepare_issue"}
+		properties["allow_incomplete"] = map[string]any{"type": "boolean", "description": "Permite criar com campos faltantes de propósito"}
+		properties["acknowledged_missing"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Lista exata de campos faltantes confirmados"}
+		required = append(required, "preview_id")
+	}
+	return objectSchema(properties, required...)
 }
 
 func cleanSchema(apply bool) map[string]any {
@@ -289,6 +333,10 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolOperationShow(params.Arguments)
 	case "clean_preview":
 		return s.toolClean(ctx, params.Arguments, false)
+	case "sources":
+		return s.toolSources()
+	case "prepare_issue":
+		return s.toolPrepareIssue(ctx, params.Arguments)
 	case "pause":
 		return s.toolPause(params.Arguments)
 	case "cancel":
@@ -303,6 +351,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolRefinePreview(params.Arguments)
 	case "refine":
 		return s.toolRefine(params.Arguments)
+	case "create_issue":
+		return s.toolCreateIssue(ctx, params.Arguments)
 	case "release":
 		return s.toolRelease(ctx, params.Arguments)
 	case "clean_apply":
@@ -316,11 +366,91 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine":
+	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue":
 		return true
 	default:
 		return false
 	}
+}
+
+func (s *Server) toolSources() (any, *rpcError) {
+	registry := sources.NewRegistry(s.cfg)
+	info, active := control.DaemonActive(s.cfg, 15*time.Second)
+	activeSource := s.cfg.DefaultSource
+	if active && strings.TrimSpace(info.Source) != "" {
+		activeSource = info.Source
+	}
+	names := make([]string, 0, len(s.cfg.Sources))
+	for name := range s.cfg.Sources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	items := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		sc := s.cfg.Sources[name]
+		item := map[string]any{"name": name, "driver": sc.Driver, "default": name == s.cfg.DefaultSource, "active": name == activeSource, "labels": sc.Labels, "repo_path": sc.RepoPath}
+		src, err := registry.Open(name)
+		if err != nil {
+			item["error"] = err.Error()
+			items = append(items, item)
+			continue
+		}
+		_, canCreate := src.(source.TaskCreator)
+		item["can_create"] = canCreate
+		item["caps"] = src.Caps()
+		items = append(items, item)
+	}
+	value, err := toolResult(map[string]any{
+		"active_source": activeSource,
+		"daemon_active": active,
+		"sources":       items,
+	})
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
+}
+
+func (s *Server) toolPrepareIssue(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var draft source.TaskDraft
+	if err := json.Unmarshal(raw, &draft); err != nil {
+		return nil, invalidParams(err)
+	}
+	preview, err := taskcreate.New(s.cfg).Prepare(ctx, draft)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(preview)
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
+}
+
+func (s *Server) toolCreateIssue(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		source.TaskDraft
+		PreviewID           string   `json:"preview_id"`
+		AllowIncomplete     bool     `json:"allow_incomplete"`
+		AcknowledgedMissing []string `json:"acknowledged_missing"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	result, err := taskcreate.New(s.cfg).Create(ctx, taskcreate.Request{
+		Draft:               args.TaskDraft,
+		PreviewID:           args.PreviewID,
+		AllowIncomplete:     args.AllowIncomplete,
+		AcknowledgedMissing: args.AcknowledgedMissing,
+	})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
 }
 
 func (s *Server) toolDaemonStatus() (any, *rpcError) {

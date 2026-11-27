@@ -94,7 +94,7 @@ func New(name, root string, cfg config.SourceConfig) (*Driver, error) {
 func (d *Driver) Name() string { return d.name }
 
 func (d *Driver) Caps() source.Caps {
-	return source.Caps{Comments: true, Pagination: true, WriteBack: true}
+	return source.Caps{Comments: true, Pagination: true, WriteBack: true, Create: true}
 }
 
 type pullRequest struct {
@@ -102,6 +102,54 @@ type pullRequest struct {
 	URL         string `json:"url"`
 	HeadRefName string `json:"headRefName"`
 	Body        string `json:"body"`
+}
+
+func (d *Driver) CreateTask(ctx context.Context, draft source.TaskDraft) (*source.Task, error) {
+	title := strings.TrimSpace(draft.Title)
+	if title == "" {
+		return nil, errors.New("título da issue é obrigatório")
+	}
+	body := source.RenderTaskBody(draft)
+	args := []string{"issue", "create", "--repo", d.repo, "--title", title, "--body", body}
+	for _, label := range draft.Labels {
+		if strings.TrimSpace(label) != "" {
+			args = append(args, "--label", strings.TrimSpace(label))
+		}
+	}
+	if assignee := strings.TrimSpace(draft.Assignee); assignee != "" {
+		args = append(args, "--assignee", assignee)
+	}
+	output, err := d.run(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	url := strings.TrimSpace(string(output))
+	lines := strings.Split(url, "\n")
+	url = strings.TrimSpace(lines[len(lines)-1])
+	number := strings.TrimSpace(filepath.Base(url))
+	if _, err := strconv.Atoi(number); err != nil {
+		return nil, fmt.Errorf("resposta inesperada do gh issue create: %q", url)
+	}
+	now := time.Now().UTC()
+	task := &source.Task{
+		SchemaVersion: 1,
+		Source:        d.name,
+		ExternalID:    number,
+		Title:         title,
+		Description:   body,
+		Acceptance:    draft.Acceptance,
+		Labels:        draft.Labels,
+		Priority:      strings.TrimSpace(draft.Priority),
+		Assignee:      strings.TrimSpace(draft.Assignee),
+		Status:        "open",
+		URLs:          []string{url},
+		RepoHint:      d.repoPath,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ContentHash:   source.HashContent(title, body, draft.Acceptance),
+		ProviderMeta:  map[string]string{"repo": d.repo, "number": number, "state": "OPEN"},
+	}
+	return task, nil
 }
 
 func (d *Driver) ListPullRequests(ctx context.Context) ([]source.PullRequest, error) {

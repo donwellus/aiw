@@ -58,6 +58,15 @@ Regras:
   ao humano o target, o feedback integral e os estágios/artefatos afetados; só
   chame `aiw_refine` com o `preview_id` depois de uma confirmação explícita.
 - `clean_apply` exige `confirm=true` e o humano deve confirmar no OpenCode.
+- Para criar issue/task, aceite o pedido em texto livre, mas separe em
+  `title`, `description`, `acceptance`, `labels`, `priority`, `assignee` e
+  `repo`. Use `aiw_sources` e depois `aiw_prepare_issue`; mostre o preview e os
+  campos faltantes. Só chame `aiw_create_issue` com o `preview_id`; campos
+  faltantes exigem confirmação explícita, `allow_incomplete=true` e
+  `acknowledged_missing` exato. Nunca escolha uma source manualmente.
+- `aiw_create_issue` cria na source ativa do daemon (ou `default_source` se o
+  daemon estiver parado); não use `edit`/shell para isso.
+
 - Acompanhe operações assíncronas com `aiw_operations` e `aiw_operation_show`.
 - Para `needs_input`, use `aiw_questions` para mostrar as perguntas ao humano,
   peça a resposta e publique com `aiw_answer`. O answer grava um comentário na

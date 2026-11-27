@@ -40,6 +40,7 @@ echo "$@" >> "$GH_LOG"
 case "$1 $2" in
   "issue list") cat "$GH_FIXTURES/list.json" ;;
   "issue view") cat "$GH_FIXTURES/view.json" ;;
+  "issue create") printf 'https://github.com/owner/repo/issues/99\n' ;;
   "pr list") cat "$GH_FIXTURES/pr.json" ;;
   "api graphql") cat "$GH_FIXTURES/review.json" ;;
   "auth status") exit 0 ;;
@@ -253,4 +254,30 @@ func readFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestCreateTask(t *testing.T) {
+	logPath, driver := setupFakeGH(t, listFixture, viewFixture)
+	task, err := driver.CreateTask(context.Background(), source.TaskDraft{
+		Title:       "Nova issue",
+		Description: "Contexto da issue.",
+		Acceptance:  []string{"O fluxo funciona."},
+		Labels:      []string{"aiw", "backend"},
+		Assignee:    "ana",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ExternalID != "99" || task.URLs[0] != "https://github.com/owner/repo/issues/99" {
+		t.Fatalf("task = %+v", task)
+	}
+	if len(task.Acceptance) != 1 || !strings.Contains(task.Description, "## Critérios de aceite") {
+		t.Fatalf("conteúdo = %+v", task)
+	}
+	log := readFile(t, logPath)
+	for _, want := range []string{"issue create --repo owner/repo", "--title Nova issue", "--label aiw", "--label backend", "--assignee ana"} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("log sem %q: %s", want, log)
+		}
+	}
 }

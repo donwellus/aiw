@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/donwellus/aiw/internal/config"
@@ -268,5 +269,49 @@ func TestClaimKeySharedAcrossAliases(t *testing.T) {
 	}
 	if task.ClaimKey != refsA[0].ClaimKey {
 		t.Fatalf("Task.ClaimKey = %q, esperado %q", task.ClaimKey, refsA[0].ClaimKey)
+	}
+}
+
+func TestCreateTask(t *testing.T) {
+	root, driver := newFixture(t)
+	task, err := driver.CreateTask(context.Background(), source.TaskDraft{
+		Title:       "Nova tarefa",
+		Description: "Corpo criado pelo coordinator.",
+		Acceptance:  []string{"O critério é verificável."},
+		Labels:      []string{"aiw", "reader"},
+		Priority:    "high",
+		Assignee:    "ana",
+		Repo:        "./repo",
+		Pending:     []string{"assignee"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ExternalID == "" || task.Source != "folder" {
+		t.Fatalf("task = %+v", task)
+	}
+	path := filepath.Join(root, "tasks", task.ExternalID+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	for _, want := range []string{"title: Nova tarefa", "labels:", "reader", "## Critérios de aceite", "## Campos pendentes", "- assignee"} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("arquivo sem %q:\n%s", want, content)
+		}
+	}
+	refs, err := driver.List(context.Background(), source.Filter{Labels: []string{"reader"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ref := range refs {
+		if ref.ID == task.ExternalID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("task criada não apareceu no filtro: %+v", refs)
 	}
 }

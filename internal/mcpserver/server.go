@@ -144,7 +144,7 @@ func (s *Server) initialize(raw json.RawMessage) (map[string]any, error) {
 	instructions := "Control plane read-only do aiw. Use aiw_status, aiw_report, aiw_runs, aiw_run_show e aiw_events para inspecionar o estado. Não há ferramentas de escrita nesta versão."
 	if s.allowWrite {
 		title = "aiw control plane"
-		instructions = "Control plane do aiw com leitura e controle. Use pause, resume, approve, release, clean e operations. Resume é assíncrono: acompanhe pelo operation_id. Para refinar, use refine_preview, mostre o preview ao humano e só enfileire refine com o preview_id após confirmação explícita. Peça confirmação antes de ações destrutivas."
+		instructions = "Control plane do aiw com leitura e controle. Use pause, resume, approve, release, clean e operations. Resume é assíncrono: acompanhe pelo operation_id. Para criar issues, use sources, prepare_issue e só então create_issue com o preview_id; campos faltantes exigem allow_incomplete e acknowledged_missing. Para refinar, use refine_preview, mostre o preview ao humano e só enfileire refine com o preview_id após confirmação explícita. Peça confirmação antes de ações destrutivas."
 	}
 	return map[string]any{
 		"protocolVersion": version,

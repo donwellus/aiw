@@ -128,7 +128,7 @@ func TestInitializeListAndReadTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"status", "report", "runs", "run_show", "events", "refine_preview"} {
+	for _, want := range []string{"status", "report", "runs", "run_show", "events", "refine_preview", "sources", "prepare_issue"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente: %+v", want, names)
 		}
@@ -215,7 +215,7 @@ func TestWriteTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "questions", "situation"} {
+	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "questions", "situation"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente", want)
 		}
@@ -414,5 +414,86 @@ func TestRefinePreviewRequiresConfirmationToken(t *testing.T) {
 	}
 	if operations[0].Args["preview_id"] != previewID {
 		t.Fatalf("preview_id não persistido: %+v", operations[0].Args)
+	}
+}
+
+func TestPrepareAndCreateIssue(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	cfg.DefaultSource = "folder"
+	cfg.Sources = map[string]config.SourceConfig{
+		"folder": {Driver: "folder", Path: "./tasks"},
+	}
+	cfg.Workspace.DefaultRepo = "."
+	server.allowWrite = true
+
+	prepareArgs := map[string]any{
+		"title":       "Nova issue",
+		"description": "Contexto completo da issue.",
+		"acceptance":  []string{"O fluxo funciona."},
+	}
+	preparePayload, _ := json.Marshal(prepareArgs)
+	prepared := toolStructured(t, serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"prepare_issue","arguments":`+string(preparePayload)+`}}`+"\n")[0])
+	previewID, _ := prepared["preview_id"].(string)
+	missing, _ := prepared["missing"].([]any)
+	if previewID == "" || len(missing) != 0 {
+		t.Fatalf("preview = %+v", prepared)
+	}
+
+	createArgs := map[string]any{
+		"preview_id":  previewID,
+		"title":       "Nova issue",
+		"description": "Contexto completo da issue.",
+		"acceptance":  []string{"O fluxo funciona."},
+	}
+	createPayload, _ := json.Marshal(createArgs)
+	created := toolStructured(t, serve(t, server, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_issue","arguments":`+string(createPayload)+`}}`+"\n")[0])
+	if created["source"] != "folder" || created["external_id"] == "" {
+		t.Fatalf("created = %+v", created)
+	}
+	entries, err := os.ReadDir(filepath.Join(cfg.Root, "tasks"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("tasks = %+v err=%v", entries, err)
+	}
+}
+
+func TestCreateIssueRequiresIncompleteAcknowledgement(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	cfg.DefaultSource = "folder"
+	cfg.Sources = map[string]config.SourceConfig{
+		"folder": {Driver: "folder", Path: "./tasks"},
+	}
+	cfg.Workspace.DefaultRepo = "."
+	server.allowWrite = true
+
+	prepareArgs := map[string]any{
+		"title":       "Issue sem aceite",
+		"description": "Contexto suficiente.",
+	}
+	preparePayload, _ := json.Marshal(prepareArgs)
+	prepared := toolStructured(t, serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"prepare_issue","arguments":`+string(preparePayload)+`}}`+"\n")[0])
+	previewID, _ := prepared["preview_id"].(string)
+	missing, _ := prepared["missing"].([]any)
+	if len(missing) != 1 || missing[0] != "acceptance" {
+		t.Fatalf("missing = %+v", missing)
+	}
+
+	blockedPayload, _ := json.Marshal(map[string]any{
+		"preview_id": previewID, "title": "Issue sem aceite", "description": "Contexto suficiente.",
+	})
+	blocked := serve(t, server, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_issue","arguments":`+string(blockedPayload)+`}}`+"\n")[0]
+	var blockedResult struct {
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(blocked.Result, &blockedResult); err != nil || !blockedResult.IsError {
+		t.Fatalf("criação incompleta deveria falhar: %+v", blocked)
+	}
+
+	allowedPayload, _ := json.Marshal(map[string]any{
+		"preview_id": previewID, "title": "Issue sem aceite", "description": "Contexto suficiente.",
+		"allow_incomplete": true, "acknowledged_missing": []string{"acceptance"},
+	})
+	allowed := toolStructured(t, serve(t, server, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_issue","arguments":`+string(allowedPayload)+`}}`+"\n")[0])
+	if allowed["external_id"] == "" {
+		t.Fatalf("allowed = %+v", allowed)
 	}
 }

@@ -107,6 +107,9 @@ Controle:
 | `aiw_answer` | publica resposta na fonte e enfileira rerun (só `needs_input`) |
 | `aiw_refine_preview` | prévia read-only do feedback/impacto do refine |
 | `aiw_refine` | refina gate pausado; exige `preview_id` e confirmação |
+| `aiw_sources` | lista fontes configuradas, fonte ativa e suporte a criação |
+| `aiw_prepare_issue` | valida e formata draft de issue; não cria |
+| `aiw_create_issue` | cria issue na fonte ativa; exige `preview_id` |
 
 `resume` não bloqueia: o daemon executa e o coordenador acompanha:
 
@@ -154,6 +157,21 @@ Coordenador:
   [aiw_refine {run_id: "X", target: "plan", feedback: "...", preview_id: "rp-..."}]
   Refine enfileirado: op-...
 
+Você: crie uma issue para revisar o cache offline.
+
+Coordenador:
+  [aiw_sources]
+  [aiw_prepare_issue {title: "Revisar cache offline", description: "...", acceptance: ["..."]}]
+  Preview: source github, 1 critério de aceite; campos faltantes: nenhum.
+  preview_id: ip-...
+  Posso criar?
+
+Você: pode.
+
+Coordenador:
+  [aiw_create_issue {preview_id: "ip-...", title: "...", description: "...", acceptance: ["..."]}]
+  Issue criada: #...
+
 Você: e o que falhou?
 
 Coordenador:
@@ -179,6 +197,11 @@ Coordenador:
 
 - O agente nega `edit`, `shell` e `subagent`.
 - `refine`, `release` e `clean_apply` pedem confirmação no OpenCode.
+- A criação de issue usa a fonte ativa do daemon; o texto livre precisa ser
+  estruturado antes de `prepare_issue`. Campos faltantes só podem ser omitidos
+  com `allow_incomplete=true` e `acknowledged_missing` exato.
+- `folder` aceita labels no frontmatter, mas não adiciona/remove labels
+  dinamicamente; a seção `## Campos pendentes` é o marcador universal.
 - `refine` exige `preview_id` de `aiw_refine_preview`; o MCP revalida o token
   antes de enfileirar e o executor revalida antes de aplicar.
 - `clean_apply` também exige `confirm=true` no MCP.

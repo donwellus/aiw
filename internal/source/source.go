@@ -58,10 +58,47 @@ type Filter struct {
 }
 
 type Caps struct {
-	Comments    bool
-	Attachments bool
-	Pagination  bool
-	WriteBack   bool
+	Comments    bool `json:"comments"`
+	Attachments bool `json:"attachments"`
+	Pagination  bool `json:"pagination"`
+	WriteBack   bool `json:"write_back"`
+	Create      bool `json:"create"`
+}
+
+type TaskDraft struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Acceptance  []string `json:"acceptance,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
+	Priority    string   `json:"priority,omitempty"`
+	Assignee    string   `json:"assignee,omitempty"`
+	Repo        string   `json:"repo,omitempty"`
+	Pending     []string `json:"pending,omitempty"`
+}
+
+type TaskCreator interface {
+	CreateTask(ctx context.Context, draft TaskDraft) (*Task, error)
+}
+
+func RenderTaskBody(draft TaskDraft) string {
+	var builder strings.Builder
+	if strings.TrimSpace(draft.Description) != "" {
+		builder.WriteString(strings.TrimSpace(draft.Description))
+		builder.WriteString("\n")
+	}
+	if len(draft.Acceptance) > 0 {
+		builder.WriteString("\n## Critérios de aceite\n\n")
+		for _, criterion := range draft.Acceptance {
+			fmt.Fprintf(&builder, "- [ ] %s\n", strings.TrimSpace(criterion))
+		}
+	}
+	if len(draft.Pending) > 0 {
+		builder.WriteString("\n## Campos pendentes\n\n")
+		for _, field := range draft.Pending {
+			fmt.Fprintf(&builder, "- %s\n", strings.TrimSpace(field))
+		}
+	}
+	return strings.TrimSpace(builder.String()) + "\n"
 }
 
 type Source interface {
