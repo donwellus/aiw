@@ -89,7 +89,7 @@ Leitura:
 | `aiw_runs` | runs atuais por tarefa; `all=true` inclui histórico |
 | `aiw_run_show` | run + eventos |
 | `aiw_events` | eventos recentes |
-| `aiw_daemon_status` | heartbeat/atividade do daemon |
+| `aiw_daemon_status` | heartbeat/atividade e último restart |
 | `aiw_operations` | operações assíncronas |
 | `aiw_operation_show` | detalhe/resultado de operação |
 | `aiw_clean_preview` | prévia do clean |
@@ -103,6 +103,7 @@ Controle:
 | `aiw_unpause` | remove somente a pausa global; não retoma runs — confirmação no OpenCode |
 | `aiw_resume` | enfileira resume; retorna `operation_id` |
 | `aiw_merge` | adota PR opcionalmente e enfileira merge após validar CI — confirmação no OpenCode |
+| `aiw_daemon_restart` | restart drenado com espera do processo antigo — confirmação no OpenCode |
 | `aiw_approve` | aprova gate intake/spec/plan |
 | `aiw_release` | libera claim/estado — confirmação no OpenCode |
 | `aiw_clean_apply` | exige `confirm=true` + confirmação no OpenCode |
@@ -202,7 +203,7 @@ Coordenador:
 ## Segurança
 
 - O agente nega `edit`, `shell` e `subagent`.
-- `refine`, `close_issue`, `ci_decision`, `unpause`, `merge`, `release` e `clean_apply` pedem confirmação no OpenCode.
+- `refine`, `close_issue`, `ci_decision`, `unpause`, `merge`, `daemon_restart`, `release` e `clean_apply` pedem confirmação no OpenCode.
 - A criação de issue usa a fonte ativa do daemon; o texto livre precisa ser
   estruturado antes de `prepare_issue`. Campos faltantes só podem ser omitidos
   com `allow_incomplete=true` e `acknowledged_missing` exato.

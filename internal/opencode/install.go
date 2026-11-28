@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const CoordinatorVersion = "1"
+const CoordinatorVersion = "2"
 
 //go:embed templates/agents/aiw-coordinator.md
 var coordinatorTemplate []byte

@@ -19,6 +19,10 @@ type DaemonInfo struct {
 	StatusAddr  string    `json:"status_addr,omitempty"`
 	Version     string    `json:"version,omitempty"`
 	CreatePR    bool      `json:"create_pr,omitempty"`
+	Binary      string    `json:"binary,omitempty"`
+	Args        []string  `json:"args,omitempty"`
+	WorkDir     string    `json:"work_dir,omitempty"`
+	LogPath     string    `json:"log_path,omitempty"`
 }
 
 func DaemonPath(cfg *config.Config) string {

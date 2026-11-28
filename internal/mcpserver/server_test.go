@@ -216,7 +216,7 @@ func TestWriteTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pause", "unpause", "merge", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_status", "ci_decision", "questions", "situation"} {
+	for _, want := range []string{"pause", "unpause", "merge", "daemon_restart", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_status", "ci_decision", "questions", "situation"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente", want)
 		}

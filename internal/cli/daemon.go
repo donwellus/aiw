@@ -8,11 +8,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/donwellus/aiw/internal/config"
 	"github.com/donwellus/aiw/internal/control"
 	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
@@ -216,6 +219,8 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				execWG.Wait()
 			}()
 
+			binaryPath, _ := os.Executable()
+			workDir, _ := os.Getwd()
 			daemonInfo := control.DaemonInfo{
 				PID:        os.Getpid(),
 				StartedAt:  time.Now().UTC(),
@@ -225,6 +230,10 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				StatusAddr: statusAddr,
 				Version:    versionString(),
 				CreatePR:   createPR,
+				Binary:     binaryPath,
+				Args:       append([]string(nil), os.Args[1:]...),
+				WorkDir:    workDir,
+				LogPath:    daemonLogPath(cfg),
 			}
 			if err := control.WriteDaemonInfo(cfg, daemonInfo); err != nil {
 				return err
@@ -421,6 +430,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 	cmd.Flags().StringVar(&webhookAddr, "webhook-addr", "", "endereço HTTP para webhooks (github) - ex.: 127.0.0.1:8788")
 	cmd.Flags().DurationVar(&drainTimeout, "drain-timeout", 5*time.Minute, "tempo máximo para drenar runs em andamento após SIGINT")
 	cmd.Flags().DurationVar(&pausePoll, "pause-poll", 10*time.Second, "intervalo de checagem da pausa global no modo idle")
+	cmd.AddCommand(newDaemonRestartCommand(opts))
 	return cmd
 }
 
@@ -489,4 +499,12 @@ func startWebhookServer(ctx context.Context, addr string, handler http.Handler) 
 		_ = server.Shutdown(shutdownCtx)
 	}
 	return shutdown, listener.Addr().String(), nil
+}
+
+func daemonLogPath(cfg *config.Config) string {
+	target, err := os.Readlink("/proc/self/fd/1")
+	if err == nil && filepath.IsAbs(target) && !strings.HasPrefix(target, "/dev/") && !strings.HasPrefix(target, "pipe:") {
+		return target
+	}
+	return filepath.Join(cfg.DataDir(), "daemon.log")
 }

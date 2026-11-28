@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/donwellus/aiw/internal/clean"
 	"github.com/donwellus/aiw/internal/control"
+	"github.com/donwellus/aiw/internal/daemonrestart"
 	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/report"
@@ -98,6 +101,16 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"description": "Mostra se o daemon está ativo e seu heartbeat.",
 			"inputSchema": objectSchema(map[string]any{}),
 			"annotations": readOnly,
+		},
+		map[string]any{
+			"name":        "daemon_restart",
+			"title":       "Reiniciar daemon",
+			"description": "Solicita restart drenado do daemon. Exige confirm=true; o novo processo só sobe depois que o antigo sair.",
+			"inputSchema": objectSchema(map[string]any{
+				"confirm":         map[string]any{"type": "boolean", "description": "Confirmação explícita do restart"},
+				"timeout_seconds": map[string]any{"type": "integer", "minimum": 30, "maximum": 3600, "description": "Timeout total para drain e start"},
+			}, "confirm"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
 		},
 		{
 			"name":        "operations",
@@ -378,6 +391,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolEvents(ctx, params.Arguments)
 	case "daemon_status":
 		return s.toolDaemonStatus()
+	case "daemon_restart":
+		return s.toolDaemonRestart(params.Arguments)
 	case "questions":
 		return s.toolQuestions(params.Arguments)
 	case "operations":
@@ -425,7 +440,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "unpause", "merge", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
+	case "pause", "unpause", "merge", "daemon_restart", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
 		return true
 	default:
 		return false
@@ -580,11 +595,75 @@ func (s *Server) toolDaemonStatus() (any, *rpcError) {
 	if info.PID != 0 {
 		value["daemon"] = info
 	}
+	if restart, ok := daemonrestart.Latest(s.cfg); ok {
+		value["restart"] = restart
+	}
 	result, err := toolResult(value)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}
 	return result, nil
+}
+
+func (s *Server) toolDaemonRestart(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		Confirm        bool `json:"confirm"`
+		TimeoutSeconds int  `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if !args.Confirm {
+		return toolError("restart exige confirm=true"), nil
+	}
+	info, active := control.DaemonActive(s.cfg, 15*time.Second)
+	if !active {
+		return toolError("daemon não está ativo"), nil
+	}
+	binary, err := os.Executable()
+	if err != nil || strings.TrimSpace(binary) == "" {
+		binary = "aiw"
+	}
+	id := daemonrestart.NewID()
+	logPath := daemonrestart.LogPath(s.cfg, id)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return toolError(err.Error()), nil
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	defer logFile.Close()
+	timeout := args.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = int(daemonrestart.DefaultTimeout / time.Second)
+	}
+	argv := []string{"--root", s.cfg.Root}
+	if s.cfg.Path != "" {
+		argv = append(argv, "--config", s.cfg.Path)
+	}
+	argv = append(argv, "daemon", "restart", "--request", id, "--timeout", (time.Duration(timeout) * time.Second).String())
+	cmd := exec.Command(binary, argv...)
+	cmd.Dir = s.cfg.Root
+	cmd.Env = os.Environ()
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return toolError(err.Error()), nil
+	}
+	_ = cmd.Process.Release()
+	value, err := toolResult(map[string]any{
+		"restart_id": id,
+		"old_pid":    info.PID,
+		"log_path":   logPath,
+		"state_path": daemonrestart.StatePath(s.cfg, id),
+		"status":     "running",
+	})
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
 }
 
 func (s *Server) toolOperations(raw json.RawMessage) (any, *rpcError) {
