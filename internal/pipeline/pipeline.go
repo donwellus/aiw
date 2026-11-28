@@ -112,6 +112,7 @@ func (p *Pipeline) Run(ctx context.Context, task *source.Task, ref source.Ref, r
 	}
 	run := newRunState(runID, task, ref, task.Source, repoAbs)
 	run.EngineOverride = opts.EngineOverride
+	run.CreatePR = opts.CreatePR
 	dir := p.runDir(run)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -156,6 +157,12 @@ func (p *Pipeline) Resume(ctx context.Context, runID string, opts Options) (*Res
 	}
 	if opts.EngineOverride == "" {
 		opts.EngineOverride = run.EngineOverride
+	}
+	if run.CreatePR {
+		opts.CreatePR = true
+	}
+	if opts.CreatePR {
+		run.CreatePR = true
 	}
 	run.Status = "running"
 	run.Error = ""
@@ -1026,6 +1033,8 @@ type prCheck struct {
 	Status     string `json:"status"`
 	State      string `json:"state"`
 	Conclusion string `json:"conclusion"`
+	DetailsURL string `json:"detailsUrl"`
+	TargetURL  string `json:"targetUrl"`
 }
 
 type prStatus struct {
@@ -1060,6 +1069,9 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 	}
 	wt := &worktree.Worktree{Repo: run.Repo, Path: run.Worktree, Branch: run.Branch, BaseCommit: run.BaseCommit}
 	fixedHead := ""
+	if run.CIFix != nil {
+		fixedHead = strings.TrimSpace(run.CIFix.LastHead)
+	}
 
 	for {
 		status, err := p.readPRStatus(ctx, run.PRURL)
@@ -1099,11 +1111,35 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 				status.ReviewDecision = review.Decision
 			}
 		}
-		if fixedHead != "" && status.State != "MERGED" && status.HeadRefOid != "" && status.HeadRefOid != fixedHead {
+		if fixedHead != "" && status.State != "MERGED" && status.HeadRefOid != fixedHead {
 			status.Mergeable = "UNKNOWN"
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(poll):
+				continue
+			}
+		}
+		if failures := p.failedCIFixChecks(status); len(failures) > 0 {
+			fixed, fixErr := p.remediateCIFailure(ctx, run, trace, wt, failures[0], budget)
+			if fixErr != nil {
+				return fixErr
+			}
+			if fixed {
+				if run.CIFix != nil && run.CIFix.LastHead != "" {
+					fixedHead = run.CIFix.LastHead
+				} else if head, err := wt.RevParse(ctx, "HEAD"); err == nil {
+					fixedHead = strings.TrimSpace(head)
+				}
+				continue
+			}
 		}
 		ready, pending, reason := p.evaluatePRStatus(status)
 		if reason != "" {
+			if strings.HasPrefix(reason, "check ") {
+				check := strings.TrimSuffix(strings.TrimPrefix(reason, "check "), " falhou")
+				return p.pauseCIFix(run, check, reason, "")
+			}
 			return fmt.Errorf("%w: entrega bloqueada: %s", ErrDeliveryPending, reason)
 		}
 		if ready {
@@ -1567,6 +1603,8 @@ func (p *Pipeline) humanFeedback(run *RunState, stage string) string {
 		name = "spec.md"
 	case "architect":
 		name = "plan.md"
+	case "deliver":
+		name = "delivery.md"
 	default:
 		return ""
 	}

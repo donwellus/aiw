@@ -128,7 +128,7 @@ func TestInitializeListAndReadTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"status", "report", "runs", "run_show", "events", "refine_preview", "sources", "prepare_issue"} {
+	for _, want := range []string{"status", "report", "ci_status", "runs", "run_show", "events", "refine_preview", "sources", "prepare_issue"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente: %+v", want, names)
 		}
@@ -215,7 +215,7 @@ func TestWriteTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "questions", "situation"} {
+	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_status", "ci_decision", "questions", "situation"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente", want)
 		}
@@ -285,6 +285,15 @@ func TestReportToolSummaryOnly(t *testing.T) {
 	}
 	if _, ok := result["tasks"]; ok {
 		t.Fatalf("summary_only não deveria retornar tasks: %+v", result)
+	}
+}
+
+func TestCIStatusTool(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	responses := serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ci_status","arguments":{"run_id":"run-1"}}}`+"\n")
+	result := toolStructured(t, responses[0])
+	if result["run_id"] != "run-1" || result["status"] != "succeeded" {
+		t.Fatalf("ci_status = %+v", result)
 	}
 }
 

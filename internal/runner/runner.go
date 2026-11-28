@@ -318,9 +318,7 @@ func (r *Runner) Resume(ctx context.Context, runID string, opts pipeline.Options
 		out.Reason = "run já concluída"
 		return out, nil
 	}
-	if strings.TrimSpace(run.PRURL) != "" && !opts.CreatePR {
-		opts.CreatePR = true
-	}
+	opts = resumeOptions(run, opts)
 	_ = os.Remove(r.cancelMarkerPath(run.ID))
 	runCtx, stopCancel := r.watchCancel(ctx, run.ID)
 	defer stopCancel()
@@ -510,4 +508,14 @@ func (r *Runner) Work(ctx context.Context, jobs []Job, workers int, drain <-chan
 		}
 	}
 	return pool.WaitAll()
+}
+
+func resumeOptions(run *pipeline.RunState, opts pipeline.Options) pipeline.Options {
+	if run == nil {
+		return opts
+	}
+	if run.CreatePR || strings.TrimSpace(run.PRURL) != "" {
+		opts.CreatePR = true
+	}
+	return opts
 }

@@ -238,6 +238,7 @@ func TestWriteBack(t *testing.T) {
 		"--remove-label aiw:running",
 		"issue comment 1 --repo owner/repo",
 		"issue close 1 --repo owner/repo",
+		source.WritebackMarker,
 		"auth status",
 		"repo view owner/repo",
 	} {
@@ -356,5 +357,28 @@ func TestAllowedAttachmentHost(t *testing.T) {
 	}
 	if !s3AttachmentHost("github-production-user-asset-6210df.s3.amazonaws.com") {
 		t.Fatal("host de user asset deveria ser identificado como S3")
+	}
+}
+
+func TestTaskHashIgnoresAIGeneratedComments(t *testing.T) {
+	item := issue{
+		Number: 1,
+		Title:  "Tarefa",
+		Body:   "- [ ] critério",
+		State:  "OPEN",
+		Comments: []comment{
+			{Body: "comentário humano"},
+			{Body: source.WritebackMarker + "\naiw: run `run-1` concluída."},
+			{Body: "aiw: run `run-old` concluída."},
+			{Body: source.ExternalReplyMarker + "\nresposta"},
+		},
+	}
+	task := (&Driver{}).taskFromIssue(item, "github")
+	want := source.HashContent(item.Title, item.Body+"\ncomentário humano\n", task.Acceptance)
+	if task.ContentHash != want {
+		t.Fatalf("hash = %q, esperado %q", task.ContentHash, want)
+	}
+	if !source.IsAIGeneratedComment("aiw: run `run-old` falhou.") {
+		t.Fatal("comentário legado de falha deveria ser reconhecido")
 	}
 }

@@ -127,6 +127,9 @@ type DeliveryConfig struct {
 	CITimeout         Duration `yaml:"ci_timeout"`
 	CIPollInterval    Duration `yaml:"ci_poll_interval"`
 	MaxFixRounds      int      `yaml:"max_fix_rounds"`
+	CIFix             *bool    `yaml:"ci_fix"`
+	CIFixChecks       []string `yaml:"ci_fix_checks"`
+	MaxCIFixRounds    int      `yaml:"max_ci_fix_rounds"`
 	MergeConcurrency  int      `yaml:"merge_concurrency"`
 	ExternalReview    string   `yaml:"external_review"`
 	ExternalReply     string   `yaml:"external_reply"`
@@ -139,6 +142,13 @@ func (d DeliveryConfig) RequireCIEnabled() bool {
 		return true
 	}
 	return *d.RequireCI
+}
+
+func (d DeliveryConfig) CIFixEnabled() bool {
+	if d.CIFix == nil {
+		return false
+	}
+	return *d.CIFix
 }
 
 type IntakeConfig struct {
@@ -441,6 +451,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Delivery.MaxFixRounds == 0 {
 		c.Delivery.MaxFixRounds = 3
+	}
+	if len(c.Delivery.CIFixChecks) == 0 {
+		c.Delivery.CIFixChecks = []string{"verify"}
+	}
+	if c.Delivery.MaxCIFixRounds == 0 {
+		c.Delivery.MaxCIFixRounds = 3
 	}
 	if c.Delivery.MergeConcurrency == 0 {
 		c.Delivery.MergeConcurrency = 1

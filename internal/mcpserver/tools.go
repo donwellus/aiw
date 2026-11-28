@@ -52,6 +52,15 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			}),
 			"annotations": readOnly,
 		},
+		map[string]any{
+			"name":        "ci_status",
+			"title":       "Status da correção de CI",
+			"description": "Mostra o estado do loop de correção de CI de uma run, incluindo blockers e feedback humano.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string", "description": "ID da run"},
+			}, "run_id"),
+			"annotations": readOnly,
+		},
 		{
 			"name":        "runs",
 			"title":       "Listar runs",
@@ -253,6 +262,17 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false},
 		},
 		map[string]any{
+			"name":        "ci_decision",
+			"title":       "Decidir correção de CI",
+			"description": "Registra a decisão humana para uma run pausada em delivery e enfileira o resume. Use FIX_CODE, FIX_TEST ou RETRY_CI.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id":   map[string]any{"type": "string", "description": "ID da run pausada"},
+				"decision": map[string]any{"type": "string", "enum": []string{"FIX_CODE", "FIX_TEST", "RETRY_CI"}, "description": "Decisão humana"},
+				"feedback": map[string]any{"type": "string", "description": "Justificativa e instruções para o agente de qualidade"},
+			}, "run_id", "decision"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
+		},
+		map[string]any{
 			"name":        "operation_cancel",
 			"title":       "Cancelar operação",
 			"description": "Cancela uma operação assíncrona pendente ou em execução.",
@@ -329,6 +349,10 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolStatus(ctx)
 	case "report":
 		return s.toolReport(ctx, params.Arguments)
+	case "ci_status":
+		return s.toolCIStatus(params.Arguments)
+	case "ci_decision":
+		return s.toolCIDecision(params.Arguments)
 	case "runs":
 		return s.toolRuns(ctx, params.Arguments)
 	case "run_show":
@@ -380,7 +404,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue":
+	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
 		return true
 	default:
 		return false
@@ -1185,4 +1209,79 @@ func (s *Server) readRunEvents(runID string) []map[string]any {
 		events = append(events, event)
 	}
 	return events
+}
+
+func (s *Server) toolCIStatus(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	run, err := pipeline.LoadRun(s.cfg, args.RunID)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	blockers := ""
+	if run.CIFix != nil && strings.TrimSpace(run.CIFix.BlockersPath) != "" {
+		if data, readErr := os.ReadFile(run.CIFix.BlockersPath); readErr == nil {
+			blockers = string(data)
+		}
+	}
+	if blockers == "" {
+		if data, readErr := os.ReadFile(filepath.Join(s.cfg.RunsDir(), run.ID, "ci-blockers.md")); readErr == nil {
+			blockers = string(data)
+		}
+	}
+	humanFeedback := ""
+	if data, readErr := os.ReadFile(filepath.Join(s.cfg.RunsDir(), run.ID, "feedback", "delivery.md")); readErr == nil {
+		humanFeedback = string(data)
+	}
+	value, err := toolResult(map[string]any{
+		"run_id":         run.ID,
+		"status":         run.Status,
+		"stage":          run.Stage,
+		"pr_url":         run.PRURL,
+		"ci_fix":         run.CIFix,
+		"blockers":       blockers,
+		"human_feedback": humanFeedback,
+	})
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
+}
+
+func (s *Server) toolCIDecision(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID    string `json:"run_id"`
+		Decision string `json:"decision"`
+		Feedback string `json:"feedback"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	feedbackPath, err := control.SetDeliveryFeedback(s.cfg, args.RunID, args.Decision, args.Feedback)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	if _, active := control.DaemonActive(s.cfg, 15*time.Second); !active {
+		return toolError("daemon não está ativo; inicie aiw daemon para processar a decisão"), nil
+	}
+	store, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	operation, err := store.Enqueue(control.ActionResume, args.RunID, map[string]any{})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(map[string]any{"operation": operation, "feedback_path": feedbackPath})
+	if err != nil {
+		return nil, invalidParams(err)
+	}
+	return value, nil
 }

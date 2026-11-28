@@ -252,6 +252,11 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
 - `aiw_close_issue` fecha a issue/tarefa com motivo. Se houver run ativa, exige
   `cancel_run=true`, cancela primeiro e só fecha quando o cancelamento estiver
   confirmado; `closed=false` significa que ainda há cancelamento pendente.
+- Falhas de CI elegíveis (`delivery.ci_fix_checks`, default `verify`) podem ser
+  corrigidas por um agente de qualidade no mesmo worktree; testes só mudam com
+  evidência da spec e guardrails. Casos ambíguos/security pausam com
+  `ci-blockers.md`, exposto por `aiw_ci_status`; `aiw_ci_decision` registra a
+  decisão humana e retoma o delivery.
   No folder, a task vai para `done_dir`; se já estiver em `done`, a operação é
   idempotente, e os anexos permanecem em `tasks/attachments/<task-id>/`.
 - Imagens referenciadas na issue são baixadas para
@@ -504,6 +509,9 @@ delivery:
   ci_timeout: 30m
   ci_poll_interval: 10s
   max_fix_rounds: 3
+  ci_fix: true
+  ci_fix_checks: [verify]
+  max_ci_fix_rounds: 3
   merge_concurrency: 1
   external_review: ignore      # ignore | consume | require (grupo)
   external_reply: auto_unless_conflict

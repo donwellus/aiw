@@ -182,3 +182,32 @@ func TestCloseIssueRefusesOpenPR(t *testing.T) {
 		t.Fatalf("task não deveria ter sido movida: %v", err)
 	}
 }
+
+func TestSetDeliveryFeedbackResetsCIFixRounds(t *testing.T) {
+	cfg := closeConfig(t)
+	run := &pipeline.RunState{
+		ID:     "run-ci",
+		Task:   source.Task{Source: "folder", ExternalID: "task-ci"},
+		Source: "folder",
+		Ref:    source.Ref{Source: "folder", ID: "task-ci"},
+		Status: "paused",
+		CIFix:  &pipeline.CIFixState{Rounds: 3},
+	}
+	if err := pipeline.SaveRun(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	path, err := SetDeliveryFeedback(cfg, run.ID, "FIX_TEST", "O teste está desatualizado.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := pipeline.LoadRun(cfg, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.CIFix == nil || loaded.CIFix.Rounds != 0 {
+		t.Fatalf("ci_fix = %+v", loaded.CIFix)
+	}
+}

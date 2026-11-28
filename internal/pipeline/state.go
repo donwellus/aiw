@@ -32,6 +32,16 @@ type ExternalReviewState struct {
 	ConflictPath   string    `json:"conflict_path,omitempty"`
 }
 
+type CIFixState struct {
+	Rounds       int       `json:"rounds,omitempty"`
+	LastCheck    string    `json:"last_check,omitempty"`
+	LastHead     string    `json:"last_head,omitempty"`
+	LastDecision string    `json:"last_decision,omitempty"`
+	LastError    string    `json:"last_error,omitempty"`
+	BlockersPath string    `json:"blockers_path,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+}
+
 type ConflictState struct {
 	Attempts     int       `json:"attempts,omitempty"`
 	BaseRef      string    `json:"base_ref,omitempty"`
@@ -65,6 +75,7 @@ type RunState struct {
 	Status         string               `json:"status"`
 	Stage          string               `json:"stage"`
 	EngineOverride string               `json:"engine_override,omitempty"`
+	CreatePR       bool                 `json:"create_pr,omitempty"`
 	Stages         []StageState         `json:"stages"`
 	Gates          map[string]string    `json:"gates"`
 	Usage          engine.Usage         `json:"usage"`
@@ -74,6 +85,7 @@ type RunState struct {
 	MergedAt       time.Time            `json:"merged_at,omitempty"`
 	Delivery       *DeliveryState       `json:"delivery,omitempty"`
 	ExternalReview *ExternalReviewState `json:"external_review,omitempty"`
+	CIFix          *CIFixState          `json:"ci_fix,omitempty"`
 	Conflict       *ConflictState       `json:"conflict,omitempty"`
 	Error          string               `json:"error,omitempty"`
 	CreatedAt      time.Time            `json:"created_at"`

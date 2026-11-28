@@ -83,6 +83,38 @@ func (w *Worktree) Changed(ctx context.Context) (bool, error) {
 	return strings.TrimSpace(status) != "", nil
 }
 
+func (w *Worktree) ChangedFiles(ctx context.Context) ([]string, error) {
+	if _, err := git(ctx, w.Path, "add", "-A", "-N"); err != nil {
+		return nil, err
+	}
+	out, err := git(ctx, w.Path, "diff", "--name-only", w.BaseCommit)
+	if err != nil {
+		return nil, err
+	}
+	return splitFiles(out), nil
+}
+
+func (w *Worktree) WorkingFiles(ctx context.Context) ([]string, error) {
+	if _, err := git(ctx, w.Path, "add", "-A", "-N"); err != nil {
+		return nil, err
+	}
+	out, err := git(ctx, w.Path, "diff", "--name-only")
+	if err != nil {
+		return nil, err
+	}
+	return splitFiles(out), nil
+}
+
+func splitFiles(out string) []string {
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			files = append(files, line)
+		}
+	}
+	return files
+}
+
 func (w *Worktree) CommitsAhead(ctx context.Context) (int, error) {
 	out, err := git(ctx, w.Path, "rev-list", "--count", w.BaseCommit+"..HEAD")
 	if err != nil {

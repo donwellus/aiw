@@ -23,6 +23,9 @@ permissions:
   - action: aiw_close_issue
     resource: "*"
     effect: ask
+  - action: aiw_ci_decision
+    resource: "*"
+    effect: ask
   - action: aiw_release
     resource: "*"
     effect: ask
@@ -43,6 +46,12 @@ Regras:
 - Para pedidos de report, relatório, panorama ou resumo geral, chame
   `aiw_report` primeiro; use `summary_only=true` em perguntas rápidas. Não
   reconstrua o report com `aiw_runs` + `aiw_status`.
+
+- Quando uma run estiver pausada em `deliver` por falha de CI, use
+  `aiw_ci_status` para ler o check, os blockers e o feedback atual. Explique a
+  decisão necessária e só chame `aiw_ci_decision` com `FIX_CODE`, `FIX_TEST` ou
+  `RETRY_CI` depois da confirmação humana. Nunca edite arquivos nem execute
+  git.
 - Só use `aiw_runs` para runs; não use `workers` para inferir slots. Use
   `capacity.worker_slots`, `capacity.active_runs` e
   `capacity.active_control_operations`.

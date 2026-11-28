@@ -292,7 +292,7 @@ func TestRunDrainPausesAtStageBoundary(t *testing.T) {
 	close(drain)
 	p := New(cfg)
 	p.Telemetry = telemetry.NewRecorder()
-	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{Drain: drain})
+	res, err := p.Run(context.Background(), task, ref, filepath.Join(root, "demo"), Options{Drain: drain, CreatePR: true})
 	if !errors.Is(err, ErrPauseRequested) {
 		t.Fatalf("esperava ErrPauseRequested, obtive %v", err)
 	}
@@ -302,6 +302,9 @@ func TestRunDrainPausesAtStageBoundary(t *testing.T) {
 	}
 	if run.Status != "paused" {
 		t.Fatalf("status = %q", run.Status)
+	}
+	if !run.CreatePR {
+		t.Fatal("CreatePR não foi persistido no run")
 	}
 	for _, stage := range run.Stages {
 		if stage.Status != "pending" {

@@ -317,3 +317,14 @@ func TestCollectSkipsOpenPullRequest(t *testing.T) {
 		t.Fatalf("record = %+v found=%v", record, found)
 	}
 }
+
+func TestResumeOptionsPreserveCreatePR(t *testing.T) {
+	run := &pipeline.RunState{CreatePR: true}
+	if opts := resumeOptions(run, pipeline.Options{}); !opts.CreatePR {
+		t.Fatal("CreatePR deveria ser restaurado")
+	}
+	run = &pipeline.RunState{PRURL: "https://github.com/o/r/pull/1"}
+	if opts := resumeOptions(run, pipeline.Options{}); !opts.CreatePR {
+		t.Fatal("PRURL existente deveria ativar CreatePR")
+	}
+}

@@ -84,6 +84,7 @@ Leitura:
 | `aiw_situation` | snapshot completo: daemon, capacidade, queued, running, paused com gate/blockers, operações, claims e alertas |
 | `aiw_status` | resumo, running/queued/paused/needs_input, claims, alertas e pausa |
 | `aiw_report` | relatório completo ou `summary_only` |
+| `aiw_ci_status` | estado do loop de correção de CI, blockers e feedback |
 | `aiw_runs` | runs atuais por tarefa; `all=true` inclui histórico |
 | `aiw_run_show` | run + eventos |
 | `aiw_events` | eventos recentes |
@@ -111,6 +112,7 @@ Controle:
 | `aiw_prepare_issue` | valida e formata draft de issue; não cria |
 | `aiw_create_issue` | cria issue na fonte ativa; exige `preview_id` |
 | `aiw_close_issue` | fecha issue com motivo; exige confirmação e cancelamento prévio de run ativa |
+| `aiw_ci_decision` | decisão humana `FIX_CODE`/`FIX_TEST`/`RETRY_CI` para run pausada em delivery |
 
 `resume` não bloqueia: o daemon executa e o coordenador acompanha:
 
@@ -197,7 +199,7 @@ Coordenador:
 ## Segurança
 
 - O agente nega `edit`, `shell` e `subagent`.
-- `refine`, `close_issue`, `release` e `clean_apply` pedem confirmação no OpenCode.
+- `refine`, `close_issue`, `ci_decision`, `release` e `clean_apply` pedem confirmação no OpenCode.
 - A criação de issue usa a fonte ativa do daemon; o texto livre precisa ser
   estruturado antes de `prepare_issue`. Campos faltantes só podem ser omitidos
   com `allow_incomplete=true` e `acknowledged_missing` exato.
@@ -216,6 +218,10 @@ Coordenador:
 - `close_issue` exige motivo. Com run ativa, use `cancel_run=true`; se retornar
   `closed=false`, aguarde o cancelamento e tente novamente; não feche issue com
   PR aberto.
+- Em falha de CI, o worker de delivery pode corrigir código/testes dentro dos
+  guardrails. Se a run pausar, use `aiw_ci_status` para mostrar o blocker e
+  `aiw_ci_decision` só após confirmação humana; o coordinator não edita nem
+  executa git.
 - `clean_apply` também exige `confirm=true` no MCP.
 - O coordenador não faz merge, push ou deploy.
 - Workers continuam sujeitos a claims, worktrees, gates e permissões do aiw.

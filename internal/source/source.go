@@ -129,6 +129,20 @@ type PullRequestLister interface {
 // própria resposta seja ingerida como novo feedback externo.
 const ExternalReplyMarker = "<!-- aiw:external-reply -->"
 
+// WritebackMarker identifica comentários automáticos de conclusão/falha para
+// que o write-back não altere o hash de conteúdo e reimporte a tarefa.
+const WritebackMarker = "<!-- aiw:writeback -->"
+
+func IsAIGeneratedComment(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	if strings.Contains(trimmed, WritebackMarker) || strings.Contains(trimmed, ExternalReplyMarker) {
+		return true
+	}
+	upper := strings.ToUpper(trimmed)
+	return strings.HasPrefix(upper, "AIW: RUN ") &&
+		(strings.Contains(upper, "CONCLUÍDA.") || strings.Contains(upper, "FALHOU."))
+}
+
 type PullRequestFeedback struct {
 	ID        string    `json:"id"`
 	ThreadID  string    `json:"thread_id,omitempty"`

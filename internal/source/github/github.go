@@ -264,8 +264,10 @@ func (d *Driver) taskFromIssue(item issue, sourceName string) *source.Task {
 			Body:      entry.Body,
 			CreatedAt: entry.CreatedAt,
 		})
-		commentText.WriteString(entry.Body)
-		commentText.WriteString("\n")
+		if !source.IsAIGeneratedComment(entry.Body) {
+			commentText.WriteString(entry.Body)
+			commentText.WriteString("\n")
+		}
 	}
 	acceptance := taskItems(item.Body)
 	hash := source.HashContent(item.Title, item.Body+"\n"+commentText.String(), acceptance)
@@ -320,7 +322,7 @@ func (d *Driver) MarkDone(ctx context.Context, ref source.Ref, result source.Run
 		return err
 	}
 	if d.cfg.CommentEnabled() {
-		body := fmt.Sprintf("aiw: run `%s` concluída.\n\n- branch: `%s`\n- custo: US$ %.4f", result.RunID, result.Branch, result.CostUSD)
+		body := fmt.Sprintf("%s\naiw: run `%s` concluída.\n\n- branch: `%s`\n- custo: US$ %.4f", source.WritebackMarker, result.RunID, result.Branch, result.CostUSD)
 		if result.PRURL != "" {
 			body += "\n- PR: " + result.PRURL
 		}
@@ -348,7 +350,7 @@ func (d *Driver) MarkFailed(ctx context.Context, ref source.Ref, runErr error) e
 		if runErr != nil {
 			message = runErr.Error()
 		}
-		if err := d.Comment(ctx, ref, "aiw: run falhou.\n\n```\n"+truncate(message, 2000)+"\n```"); err != nil {
+		if err := d.Comment(ctx, ref, source.WritebackMarker+"\naiw: run falhou.\n\n```\n"+truncate(message, 2000)+"\n```"); err != nil {
 			return err
 		}
 	}

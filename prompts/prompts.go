@@ -37,6 +37,12 @@ type Data struct {
 	ConflictFiles    string
 	ConflictPath     string
 	ConflictRound    int
+	CICheck          string
+	CIFailure        string
+	CIFailurePath    string
+	CIFixPath        string
+	CIFixRound       int
+	CIFeedback       string
 	Attachments      []string
 	TestCommands     []string
 }
