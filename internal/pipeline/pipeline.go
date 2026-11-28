@@ -230,6 +230,9 @@ func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options)
 		if errors.Is(runErr, ErrPaused) || errors.Is(runErr, ErrDeliveryPending) {
 			run.Status = "paused"
 			run.Error = ""
+			if errors.Is(runErr, ErrDeliveryPending) {
+				p.setDeliveryStatus(run, "paused")
+			}
 			if err := saveRun(run, dir); err != nil {
 				p.Log.Warn("falha ao salvar run.json", "error", err)
 			}
@@ -1076,13 +1079,16 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 	if run.CIFix != nil {
 		fixedHead = strings.TrimSpace(run.CIFix.LastHead)
 	}
+	p.setDeliveryStatus(run, "waiting_ci")
 
+retry:
 	for {
 		status, err := p.readPRStatus(ctx, run.PRURL)
 		if err != nil {
 			return err
 		}
 		if !staleHead(status, fixedHead) && p.resolveConflictsEnabled() && prHasConflict(status) {
+			p.setDeliveryStatus(run, "resolving_conflict")
 			handled, err := p.resolveMergeConflict(ctx, run, trace, wt, status, budget)
 			if err != nil {
 				return err
@@ -1091,6 +1097,7 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 				if head, err := wt.Head(ctx); err == nil {
 					fixedHead = head
 				}
+				p.setDeliveryStatus(run, "waiting_ci")
 				continue
 			}
 		}
@@ -1117,6 +1124,7 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 		}
 		if fixedHead != "" && status.State != "MERGED" && status.HeadRefOid != fixedHead {
 			status.Mergeable = "UNKNOWN"
+			p.setDeliveryStatus(run, "waiting_ci")
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -1125,6 +1133,7 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 			}
 		}
 		if failures := p.failedCIFixChecks(status); len(failures) > 0 {
+			p.setDeliveryStatus(run, "remediating")
 			fixed, fixErr := p.remediateCIFailure(ctx, run, trace, wt, failures[0], budget)
 			if fixErr != nil {
 				return fixErr
@@ -1135,6 +1144,7 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 				} else if head, err := wt.RevParse(ctx, "HEAD"); err == nil {
 					fixedHead = strings.TrimSpace(head)
 				}
+				p.setDeliveryStatus(run, "waiting_ci")
 				continue
 			}
 		}
@@ -1150,8 +1160,18 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 			break
 		}
 		if !pending {
-			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrDeliveryPending)
+			p.setDeliveryStatus(run, "waiting_ci")
+			if time.Now().After(deadline) {
+				return fmt.Errorf("%w: timeout aguardando PR %s", ErrDeliveryPending, run.PRURL)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(poll):
+			}
+			continue
 		}
+		p.setDeliveryStatus(run, "waiting_ci")
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%w: timeout aguardando CI/review externo do PR %s", ErrDeliveryPending, run.PRURL)
 		}
@@ -1178,19 +1198,21 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 	if fixedHead != "" && status.State != "MERGED" && status.HeadRefOid != "" && status.HeadRefOid != fixedHead {
 		status.Mergeable = "UNKNOWN"
 	}
-	ready, pending, reason := p.evaluatePRStatus(status)
-	if reason != "" {
+	ready, _, reason := p.evaluatePRStatus(status)
+	if reason != "" || !ready {
 		release()
-		return fmt.Errorf("%w: entrega bloqueada: %s", ErrDeliveryPending, reason)
-	}
-	if !ready {
-		release()
-		if pending {
-			return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrDeliveryPending)
+		p.setDeliveryStatus(run, "waiting_ci")
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: timeout aguardando PR %s", ErrDeliveryPending, run.PRURL)
 		}
-		return fmt.Errorf("%w: PR ainda não está pronto para merge", ErrDeliveryPending)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+		goto retry
 	}
-	defer release()
+	p.setDeliveryStatus(run, "merging")
 	method := strings.ToLower(strings.TrimSpace(p.Cfg.Delivery.Method))
 	args := []string{"pr", "merge", run.PRURL}
 	switch method {
@@ -1213,6 +1235,7 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 	if err := cmd.Run(); err != nil {
 		merged, _ := p.readPRStatus(ctx, run.PRURL)
 		if merged.State != "MERGED" {
+			release()
 			return fmt.Errorf("%w: merge do PR: %v: %s", ErrDeliveryPending, err, strings.TrimSpace(stderr.String()))
 		}
 	}
@@ -1224,6 +1247,7 @@ func (p *Pipeline) awaitAndMergePR(ctx context.Context, run *RunState, trace tel
 	}
 	run.Delivery.Status = "merged"
 	run.Delivery.MergedAt = now
+	release()
 	p.save(run, p.runDir(run))
 	appendEvent(p.runDir(run), "pr.merged", map[string]any{"pr_url": run.PRURL, "method": method})
 	p.mirror(run)
@@ -1751,6 +1775,21 @@ func (p *Pipeline) validateCompletion(run *RunState, opts Options) error {
 		return fmt.Errorf("%w: o PR %s não foi mergeado", ErrDeliveryPending, run.PRURL)
 	}
 	return nil
+}
+
+func (p *Pipeline) setDeliveryStatus(run *RunState, status string) {
+	if run == nil || strings.TrimSpace(status) == "" {
+		return
+	}
+	if run.Delivery == nil {
+		run.Delivery = &DeliveryState{Provider: "github", Kind: "pull_request", URL: run.PRURL, Branch: run.Branch}
+	}
+	if run.Delivery.Status == status {
+		return
+	}
+	run.Delivery.Status = status
+	p.save(run, p.runDir(run))
+	appendEvent(p.runDir(run), "delivery.status", map[string]any{"status": status})
 }
 
 func (p *Pipeline) pauseRequested(runDir string, opts Options) bool {

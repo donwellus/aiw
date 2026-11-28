@@ -475,6 +475,13 @@ func TestEvaluatePRStatus(t *testing.T) {
 	if ready, pending, reason := p.evaluatePRStatus(status); ready || !pending || reason != "" {
 		t.Fatalf("status pendente inesperado: ready=%v pending=%v reason=%q", ready, pending, reason)
 	}
+	status.StatusChecks[0].Conclusion = "SUCCESS"
+	status.StatusChecks[0].Status = "COMPLETED"
+	status.StatusChecks[1].Conclusion = "SUCCESS"
+	status.Mergeable = "UNKNOWN"
+	if ready, pending, reason := p.evaluatePRStatus(status); ready || !pending || reason != "" {
+		t.Fatalf("mergeable transitório deveria ser pending: ready=%v pending=%v reason=%q", ready, pending, reason)
+	}
 	status.StatusChecks = []prCheck{{Name: "verify", Status: "COMPLETED", Conclusion: "FAILURE"}}
 	if _, _, reason := p.evaluatePRStatus(status); !strings.Contains(reason, "falhou") {
 		t.Fatalf("falha de check não detectada: %q", reason)

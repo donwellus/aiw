@@ -1165,6 +1165,7 @@ type runSummary struct {
 	Source       string    `json:"source,omitempty"`
 	Status       string    `json:"status"`
 	Stage        string    `json:"stage,omitempty"`
+	Delivery     string    `json:"delivery,omitempty"`
 	Repo         string    `json:"repo,omitempty"`
 	Branch       string    `json:"branch,omitempty"`
 	Worktree     string    `json:"worktree,omitempty"`
@@ -1175,6 +1176,13 @@ type runSummary struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 	PRURL        string    `json:"pr_url,omitempty"`
 	Error        string    `json:"error,omitempty"`
+}
+
+func deliveryStatus(run *pipeline.RunState) string {
+	if run != nil && run.Delivery != nil {
+		return run.Delivery.Status
+	}
+	return ""
 }
 
 func (s *Server) toolRuns(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
@@ -1225,6 +1233,7 @@ func (s *Server) toolRuns(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 			Source:       run.Source,
 			Status:       run.Status,
 			Stage:        run.Stage,
+			Delivery:     deliveryStatus(run),
 			Repo:         run.Repo,
 			Branch:       run.Branch,
 			Worktree:     run.Worktree,

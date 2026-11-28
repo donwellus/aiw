@@ -16,16 +16,16 @@ import (
 )
 
 type statusRow struct {
-	ID          string
-	Status      string
-	Stage       string
-	RunID       string
-	CostUSD     float64
-	Source      string
-	PR          string
-	UpdatedAt   time.Time
-	Title       string
-	Description string
+	ID        string
+	Status    string
+	Stage     string
+	Delivery  string
+	RunID     string
+	CostUSD   float64
+	Source    string
+	PR        string
+	UpdatedAt time.Time
+	Title     string
 }
 
 type statusColumn struct {
@@ -48,15 +48,20 @@ func statusRowsFromTasks(records []state.TaskRecord, runs map[string]*pipeline.R
 		if run := runs[record.RunID]; run != nil {
 			row.Status = run.Status
 			row.Stage = run.Stage
+			if run.Delivery != nil {
+				row.Delivery = run.Delivery.Status
+			}
 			row.CostUSD = run.Usage.CostUSD
 			row.Source = run.Source
 			row.Title = run.Task.Title
-			row.Description = run.Task.Description
 			row.PR = prLabel(run.PRURL)
 			row.UpdatedAt = run.UpdatedAt
 		}
 		if strings.TrimSpace(row.Stage) == "" {
 			row.Stage = "-"
+		}
+		if strings.TrimSpace(row.Delivery) == "" {
+			row.Delivery = "-"
 		}
 		if strings.TrimSpace(row.Title) == "" {
 			row.Title = "-"
@@ -79,7 +84,7 @@ func renderStatusTable(out io.Writer, rows []statusRow, width int) {
 	for i := range columns {
 		headers[i] = columns[i].header
 	}
-	titleHeader := "TÍTULO / DESCRIÇÃO"
+	titleHeader := "TÍTULO"
 	if runeLen(titleHeader) > titleWidth {
 		titleHeader = truncateStatusText(titleHeader, titleWidth)
 	}
@@ -90,7 +95,7 @@ func renderStatusTable(out io.Writer, rows []statusRow, width int) {
 		for column := 0; column < len(columns)-1; column++ {
 			cells[column] = columns[column].value(row)
 		}
-		cells[len(columns)-1] = statusRowText(row, titleWidth)
+		cells[len(columns)-1] = truncateStatusText(row.Title, titleWidth)
 		printStatusLine(out, cells, widths)
 	}
 
@@ -110,6 +115,7 @@ func statusLayout(rows []statusRow, width int) ([]statusColumn, int) {
 		}
 	}
 	optional := []statusColumn{
+		{header: "DELIVERY", optional: "delivery", width: 10, value: func(row statusRow) string { return row.Delivery }},
 		{header: "RUN", optional: "run", width: 34, value: func(row statusRow) string { return row.RunID }},
 		{header: "FONTE", optional: "source", width: 8, value: func(row statusRow) string { return row.Source }},
 		{header: "ATUALIZADO", optional: "updated", width: 16, value: func(row statusRow) string {
@@ -138,7 +144,7 @@ func statusLayout(rows []statusRow, width int) ([]statusColumn, int) {
 	if titleWidth < 20 {
 		titleWidth = 20
 	}
-	columns = append(columns, statusColumn{header: "TÍTULO / DESCRIÇÃO", width: titleWidth, value: func(row statusRow) string { return statusRowText(row, titleWidth) }})
+	columns = append(columns, statusColumn{header: "TÍTULO", width: titleWidth, value: func(row statusRow) string { return row.Title }})
 	return columns, titleWidth
 }
 
@@ -187,50 +193,12 @@ func truncateStatusText(text string, width int) string {
 	return string([]rune(text)[:width-1]) + "…"
 }
 
-func statusRowText(row statusRow, width int) string {
-	title := statusTitle(row.Title)
-	description := statusDescription(row.Description)
-	if description == "" {
-		return truncateStatusText(title, width)
-	}
-	if width <= 0 {
-		return title + " — " + description
-	}
-	if width < 12 {
-		return truncateStatusText(title+" — "+description, width)
-	}
-	titleBudget := width * 45 / 100
-	if titleBudget < 8 {
-		titleBudget = 8
-	}
-	descriptionBudget := width - titleBudget - 3
-	if descriptionBudget < 8 {
-		descriptionBudget = 8
-		titleBudget = width - descriptionBudget - 3
-	}
-	if titleBudget < 1 {
-		titleBudget = 1
-	}
-	if runeLen(title) <= titleBudget {
-		descriptionBudget = width - runeLen(title) - 3
-		if descriptionBudget < 1 {
-			return truncateStatusText(title+" — "+description, width)
-		}
-		return title + " — " + truncateStatusText(description, descriptionBudget)
-	}
-	return truncateStatusText(title, titleBudget) + " — " + truncateStatusText(description, descriptionBudget)
-}
-
 func statusTitle(title string) string {
 	title = strings.Join(strings.Fields(title), " ")
 	if title == "" {
 		return "-"
 	}
 	return title
-}
-
-func statusDescription(description string) string {
-	return strings.Join(strings.Fields(description), " ")
 }
 
 func prLabel(url string) string {

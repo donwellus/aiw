@@ -60,6 +60,7 @@ type Task struct {
 	Source       string    `json:"source" yaml:"source"`
 	Status       string    `json:"status" yaml:"status"`
 	Stage        string    `json:"stage,omitempty" yaml:"stage,omitempty"`
+	Delivery     string    `json:"delivery,omitempty" yaml:"delivery,omitempty"`
 	RunID        string    `json:"run_id,omitempty" yaml:"run_id,omitempty"`
 	Location     string    `json:"location,omitempty" yaml:"location,omitempty"`
 	CostUSD      float64   `json:"cost_usd" yaml:"cost_usd"`
@@ -309,6 +310,9 @@ func applyRun(row *Task, run *pipeline.RunState) {
 	}
 	row.RunID = run.ID
 	row.Stage = run.Stage
+	if run.Delivery != nil {
+		row.Delivery = run.Delivery.Status
+	}
 	if row.Title == "" {
 		row.Title = run.Task.Title
 	}

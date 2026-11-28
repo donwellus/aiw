@@ -21,15 +21,14 @@ func TestStatusTitle(t *testing.T) {
 
 func TestStatusTableOneLinePerTask(t *testing.T) {
 	row := statusRow{
-		ID:          "67",
-		Status:      "running",
-		Stage:       "requirements",
-		RunID:       "20261128-163503-67-ba26f3",
-		CostUSD:     0.0018,
-		Source:      "github",
-		PR:          "#62",
-		Title:       "Uma tarefa com título longo",
-		Description: "Descrição completa da tarefa, com detalhes suficientes para justificar o uso da largura restante.",
+		ID:      "67",
+		Status:  "running",
+		Stage:   "requirements",
+		RunID:   "20261128-163503-67-ba26f3",
+		CostUSD: 0.0018,
+		Source:  "github",
+		PR:      "#62",
+		Title:   "Uma tarefa com título longo",
 	}
 	var out strings.Builder
 	renderStatusTable(&out, []statusRow{row}, 200)
@@ -38,10 +37,10 @@ func TestStatusTableOneLinePerTask(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("esperava header + uma linha por task, obtive %d:\n%s", len(lines), text)
 	}
-	if !strings.Contains(text, "TÍTULO / DESCRIÇÃO") || !strings.Contains(text, "Descrição completa da tarefa") {
-		t.Fatalf("tabela sem descrição na linha:\n%s", text)
+	if !strings.Contains(text, "TÍTULO") || strings.Contains(text, "TÍTULO / DESCRIÇÃO") || strings.Contains(text, "Descrição") {
+		t.Fatalf("tabela não deveria mostrar descrição:\n%s", text)
 	}
-	if !strings.Contains(text, "RUN") || !strings.Contains(text, "ATUALIZADO") {
+	if !strings.Contains(text, "RUN") || !strings.Contains(text, "ATUALIZADO") || !strings.Contains(text, "DELIVERY") {
 		t.Fatalf("tabela larga sem colunas opcionais:\n%s", text)
 	}
 	for _, line := range lines {
@@ -58,6 +57,9 @@ func TestStatusTableOneLinePerTask(t *testing.T) {
 	}
 	if strings.Contains(narrow.String(), "ATUALIZADO") {
 		t.Fatalf("tabela estreita não deveria ter ATUALIZADO:\n%s", narrow.String())
+	}
+	if !strings.Contains(narrow.String(), "TÍTULO") || strings.Contains(narrow.String(), "TÍTULO / DESCRIÇÃO") || strings.Contains(narrow.String(), " — ") {
+		t.Fatalf("tabela estreita deveria mostrar só título:\n%s", narrow.String())
 	}
 }
 

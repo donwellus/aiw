@@ -57,6 +57,7 @@ type situationTask struct {
 	Source         string    `json:"source,omitempty"`
 	Status         string    `json:"status"`
 	Stage          string    `json:"stage,omitempty"`
+	Delivery       string    `json:"delivery,omitempty"`
 	RunID          string    `json:"run_id,omitempty"`
 	Gate           string    `json:"gate,omitempty"`
 	Reason         string    `json:"reason,omitempty"`
@@ -180,6 +181,7 @@ func (s *Server) situationTask(task report.Task) situationTask {
 		Source:    task.Source,
 		Status:    task.Status,
 		Stage:     task.Stage,
+		Delivery:  task.Delivery,
 		RunID:     task.RunID,
 		CostUSD:   task.CostUSD,
 		Reason:    task.Error,

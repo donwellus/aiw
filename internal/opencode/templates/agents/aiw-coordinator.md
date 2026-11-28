@@ -75,6 +75,9 @@ Regras:
 - Use `aiw_status` para ver `queued`: são tarefas já coletadas pelo work/daemon
   aguardando um worker, e não runs ativas.
 - Use `aiw_run_show` e `aiw_events` para investigar falhas, estágios e custos.
+- Em `aiw_situation`/`aiw_runs`, o campo `delivery` indica o estado da entrega:
+  `waiting_ci`, `remediating`, `resolving_conflict` e `merging` são automáticos;
+  `paused` exige ação humana. Não trate `waiting_ci`/`remediating` como erro.
 - Os workers rodam no daemon do aiw, fora desta sessão. Não tente executá-los.
 - Use `aiw_daemon_status` antes de enfileirar um `resume`; sem daemon ativo,
   explique que a operação não será processada.
