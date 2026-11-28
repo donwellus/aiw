@@ -16,7 +16,8 @@ import (
 )
 
 func newStatusCommand(opts *rootOptions) *cobra.Command {
-	return &cobra.Command{
+	var width int
+	cmd := &cobra.Command{
 		Use:   "status [run-id]",
 		Short: "Mostra execuções em andamento ou o estado de uma execução",
 		Args:  cobra.MaximumNArgs(1),
@@ -30,7 +31,7 @@ func newStatusCommand(opts *rootOptions) *cobra.Command {
 				return err
 			}
 			if len(args) == 0 {
-				return showActive(cmd, cfg, store)
+				return showActive(cmd, cfg, store, width)
 			}
 			run, err := pipeline.LoadRun(cfg, args[0])
 			if err != nil {
@@ -77,9 +78,11 @@ func newStatusCommand(opts *rootOptions) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().IntVar(&width, "width", 0, "largura da tabela (0 = terminal)")
+	return cmd
 }
 
-func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) error {
+func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store, width int) error {
 	records := state.LatestByID(store.All())
 	active := make([]state.TaskRecord, 0)
 	for _, record := range records {
@@ -94,41 +97,20 @@ func showActive(cmd *cobra.Command, cfg *config.Config, store *state.Store) erro
 		fmt.Fprintln(out, "nenhuma tarefa em andamento (running/queued/pr_open/paused/needs_input)")
 		return nil
 	}
-	writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(writer, "TAREFA\tSTATUS\tESTÁGIO\tRUN\tCUSTO\tTÍTULO")
+	runs := make(map[string]*pipeline.RunState, len(active))
 	for _, record := range active {
-		status := record.Status
-		stage := "-"
-		title := "-"
-		cost := 0.0
-		if record.RunID != "" {
-			if run, err := pipeline.LoadRun(cfg, record.RunID); err == nil {
-				status = run.Status
-				stage = run.Stage
-				title = statusTitle(run.Task.Title)
-				cost = run.Usage.CostUSD
-			}
+		if record.RunID == "" {
+			continue
 		}
-		runID := record.RunID
-		if runID == "" {
-			runID = "-"
+		if run, err := pipeline.LoadRun(cfg, record.RunID); err == nil {
+			runs[record.RunID] = run
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\tUS$ %.4f\t%s\n", record.ID, status, stage, runID, cost, title)
 	}
-	writer.Flush()
+	rows := statusRowsFromTasks(active, runs)
+	if width <= 0 {
+		width = terminalWidth(out)
+	}
+	renderStatusTable(out, rows, width)
 	fmt.Fprintf(out, "\n%d tarefa(s) em andamento\n", len(active))
 	return nil
-}
-
-func statusTitle(title string) string {
-	title = strings.Join(strings.Fields(title), " ")
-	if title == "" {
-		return "-"
-	}
-	const max = 60
-	runes := []rune(title)
-	if len(runes) <= max {
-		return title
-	}
-	return string(runes[:max-3]) + "..."
 }
