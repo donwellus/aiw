@@ -34,7 +34,8 @@ func newPauseCommand(opts *rootOptions) *cobra.Command {
 				}
 				fmt.Fprintln(out, "pausa global solicitada")
 				fmt.Fprintln(out, "runs em andamento pausam no próximo boundary de estágio; work/daemon param de pegar novas tarefas")
-				fmt.Fprintln(out, "para retomar: aiw resume --all")
+				fmt.Fprintln(out, "para remover a pausa sem retomar runs: aiw unpause")
+				fmt.Fprintln(out, "para retomar tudo: aiw resume --all")
 				return nil
 			}
 			if result.AlreadyActive {

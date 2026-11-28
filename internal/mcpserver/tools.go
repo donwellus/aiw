@@ -174,6 +174,13 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true},
 		},
 		map[string]any{
+			"name":        "unpause",
+			"title":       "Remover pausa global",
+			"description": "Remove somente a pausa global; não retoma nenhuma run pausada.",
+			"inputSchema": objectSchema(map[string]any{}),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true},
+		},
+		map[string]any{
 			"name":        "resume",
 			"title":       "Retomar",
 			"description": "Enfileira resume de uma run ou de todas as paused/canceled. Requer daemon ativo.",
@@ -375,6 +382,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolPrepareIssue(ctx, params.Arguments)
 	case "pause":
 		return s.toolPause(params.Arguments)
+	case "unpause":
+		return s.toolUnpause()
 	case "cancel":
 		return s.toolCancel(ctx, params.Arguments)
 	case "resume":
@@ -404,7 +413,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
+	case "pause", "unpause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
 		return true
 	default:
 		return false
@@ -795,6 +804,18 @@ func (s *Server) toolPause(raw json.RawMessage) (any, *rpcError) {
 		}
 	}
 	result, err := control.Pause(s.cfg, args.RunID, args.Reason)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(result)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolUnpause() (any, *rpcError) {
+	result, err := control.Unpause(s.cfg)
 	if err != nil {
 		return toolError(err.Error()), nil
 	}

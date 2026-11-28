@@ -99,6 +99,7 @@ Controle:
 | Ferramenta | Comportamento |
 |---|---|
 | `aiw_pause` | pausa global ou por run |
+| `aiw_unpause` | remove somente a pausa global; não retoma runs — confirmação no OpenCode |
 | `aiw_resume` | enfileira resume; retorna `operation_id` |
 | `aiw_approve` | aprova gate intake/spec/plan |
 | `aiw_release` | libera claim/estado — confirmação no OpenCode |
@@ -199,7 +200,7 @@ Coordenador:
 ## Segurança
 
 - O agente nega `edit`, `shell` e `subagent`.
-- `refine`, `close_issue`, `ci_decision`, `release` e `clean_apply` pedem confirmação no OpenCode.
+- `refine`, `close_issue`, `ci_decision`, `unpause`, `release` e `clean_apply` pedem confirmação no OpenCode.
 - A criação de issue usa a fonte ativa do daemon; o texto livre precisa ser
   estruturado antes de `prepare_issue`. Campos faltantes só podem ser omitidos
   com `allow_incomplete=true` e `acknowledged_missing` exato.

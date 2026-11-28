@@ -13,6 +13,7 @@ import (
 	"github.com/donwellus/aiw/internal/config"
 	"github.com/donwellus/aiw/internal/control"
 	"github.com/donwellus/aiw/internal/engine"
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/state"
@@ -215,7 +216,7 @@ func TestWriteTools(t *testing.T) {
 	for _, tool := range listed.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"pause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_status", "ci_decision", "questions", "situation"} {
+	for _, want := range []string{"pause", "unpause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_status", "ci_decision", "questions", "situation"} {
 		if !names[want] {
 			t.Fatalf("tool %q ausente", want)
 		}
@@ -285,6 +286,22 @@ func TestReportToolSummaryOnly(t *testing.T) {
 	}
 	if _, ok := result["tasks"]; ok {
 		t.Fatalf("summary_only não deveria retornar tasks: %+v", result)
+	}
+}
+
+func TestUnpauseTool(t *testing.T) {
+	server, cfg, _ := newTestServer(t)
+	server.allowWrite = true
+	if err := pause.Set(cfg.DataDir(), "test"); err != nil {
+		t.Fatal(err)
+	}
+	responses := serve(t, server, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unpause","arguments":{}}}`+"\n")
+	result := toolStructured(t, responses[0])
+	if result["paused"] != false {
+		t.Fatalf("unpause = %+v", result)
+	}
+	if pause.Active(cfg.DataDir()) {
+		t.Fatal("pausa global permaneceu")
 	}
 }
 

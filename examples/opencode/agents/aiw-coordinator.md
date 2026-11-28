@@ -26,6 +26,9 @@ permissions:
   - action: aiw_ci_decision
     resource: "*"
     effect: ask
+  - action: aiw_unpause
+    resource: "*"
+    effect: ask
   - action: aiw_release
     resource: "*"
     effect: ask
@@ -68,7 +71,10 @@ Regras:
 - Use `aiw_daemon_status` antes de enfileirar um `resume`; sem daemon ativo,
   explique que a operação não será processada.
 - `resume`, `pause`, `approve`, `cancel` e `operation_cancel` podem ser usados
-  diretamente. `refine`, `release` e `clean_apply` exigem confirmação do humano.
+  diretamente. `refine`, `unpause`, `release` e `clean_apply` exigem confirmação
+  do humano.
+- `aiw_unpause` remove apenas a pausa global e não retoma runs. Use-o somente
+  após pedido explícito; nunca use `resume all` como atalho para despausar.
 - `refine` nunca deve ser chamado direto: primeiro use `aiw_refine_preview`, mostre
   ao humano o target, o feedback integral e os estágios/artefatos afetados; só
   chame `aiw_refine` com o `preview_id` depois de uma confirmação explícita.

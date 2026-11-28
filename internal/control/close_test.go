@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/donwellus/aiw/internal/config"
+	"github.com/donwellus/aiw/internal/pause"
 	"github.com/donwellus/aiw/internal/pipeline"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/state"
@@ -209,5 +210,37 @@ func TestSetDeliveryFeedbackResetsCIFixRounds(t *testing.T) {
 	}
 	if loaded.CIFix == nil || loaded.CIFix.Rounds != 0 {
 		t.Fatalf("ci_fix = %+v", loaded.CIFix)
+	}
+}
+
+func TestUnpauseGlobalDoesNotResumeRuns(t *testing.T) {
+	cfg := closeConfig(t)
+	if err := pause.Set(cfg.DataDir(), "manual"); err != nil {
+		t.Fatal(err)
+	}
+	run := &pipeline.RunState{ID: "run-paused", Task: source.Task{Source: "folder", ExternalID: "paused"}, Source: "folder", Status: "paused"}
+	if err := pipeline.SaveRun(cfg, run); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Unpause(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Paused || result.AlreadyInactive {
+		t.Fatalf("result = %+v", result)
+	}
+	if pause.Active(cfg.DataDir()) {
+		t.Fatal("marcador de pausa permaneceu")
+	}
+	loaded, err := pipeline.LoadRun(cfg, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Status != "paused" {
+		t.Fatalf("run status = %q", loaded.Status)
+	}
+	result, err = Unpause(cfg)
+	if err != nil || !result.AlreadyInactive {
+		t.Fatalf("segundo unpause = %+v, %v", result, err)
 	}
 }

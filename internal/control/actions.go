@@ -17,6 +17,23 @@ import (
 	"github.com/donwellus/aiw/internal/state"
 )
 
+type UnpauseResult struct {
+	Paused          bool   `json:"paused"`
+	AlreadyInactive bool   `json:"already_inactive,omitempty"`
+	Message         string `json:"message"`
+}
+
+func Unpause(cfg *config.Config) (UnpauseResult, error) {
+	active := pause.Active(cfg.DataDir())
+	if !active {
+		return UnpauseResult{Paused: false, AlreadyInactive: true, Message: "pausa global já está inativa"}, nil
+	}
+	if err := pause.Clear(cfg.DataDir()); err != nil {
+		return UnpauseResult{}, err
+	}
+	return UnpauseResult{Paused: false, Message: "pausa global removida"}, nil
+}
+
 type PauseResult struct {
 	Scope         string `json:"scope"`
 	RunID         string `json:"run_id,omitempty"`
