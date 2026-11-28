@@ -244,3 +244,10 @@ func TestUnpauseGlobalDoesNotResumeRuns(t *testing.T) {
 		t.Fatalf("segundo unpause = %+v, %v", result, err)
 	}
 }
+
+func TestOperationOptionsCreatePR(t *testing.T) {
+	opts := operationOptions(map[string]any{"create_pr": true})
+	if !opts.CreatePR {
+		t.Fatal("create_pr não foi lido")
+	}
+}

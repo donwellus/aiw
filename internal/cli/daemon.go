@@ -203,7 +203,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			executor := control.NewExecutor(cfg, store, ops, run, slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: slog.LevelInfo})))
+			executor := control.NewExecutor(cfg, store, ops, run, slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), &slog.HandlerOptions{Level: slog.LevelInfo})), createPR)
 			execCtx, cancelExec := context.WithCancel(ctx)
 			var execWG sync.WaitGroup
 			execWG.Add(1)
@@ -224,6 +224,7 @@ func newDaemonCommand(opts *rootOptions) *cobra.Command {
 				Source:     src.Name(),
 				StatusAddr: statusAddr,
 				Version:    versionString(),
+				CreatePR:   createPR,
 			}
 			if err := control.WriteDaemonInfo(cfg, daemonInfo); err != nil {
 				return err

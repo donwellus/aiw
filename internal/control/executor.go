@@ -16,19 +16,28 @@ import (
 )
 
 type Executor struct {
-	cfg    *config.Config
-	store  *state.Store
-	ops    *OperationStore
-	runner *runner.Runner
-	log    *slog.Logger
-	poll   time.Duration
+	cfg      *config.Config
+	store    *state.Store
+	ops      *OperationStore
+	runner   *runner.Runner
+	log      *slog.Logger
+	poll     time.Duration
+	createPR bool
 }
 
-func NewExecutor(cfg *config.Config, store *state.Store, ops *OperationStore, run *runner.Runner, log *slog.Logger) *Executor {
+func NewExecutor(cfg *config.Config, store *state.Store, ops *OperationStore, run *runner.Runner, log *slog.Logger, createPR bool) *Executor {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Executor{cfg: cfg, store: store, ops: ops, runner: run, log: log, poll: time.Second}
+	return &Executor{cfg: cfg, store: store, ops: ops, runner: run, log: log, poll: time.Second, createPR: createPR}
+}
+
+func (e *Executor) options(args map[string]any) pipeline.Options {
+	options := operationOptions(args)
+	if e.createPR {
+		options.CreatePR = true
+	}
+	return options
 }
 
 func (e *Executor) Run(ctx context.Context) {
@@ -110,6 +119,8 @@ func (e *Executor) runOperation(ctx context.Context, operation *Operation) (map[
 		return e.runRerun(ctx, operation)
 	case ActionRefine:
 		return e.runRefine(ctx, operation)
+	case ActionMerge:
+		return e.runMerge(ctx, operation)
 	default:
 		return nil, errors.New("ação de operação desconhecida: " + operation.Action)
 	}
@@ -119,7 +130,7 @@ func (e *Executor) runResume(ctx context.Context, operation *Operation) (map[str
 	if err := ValidateRunID(operation.RunID); err != nil {
 		return map[string]any{"run_id": operation.RunID}, err
 	}
-	outcome, runErr := e.runner.Resume(ctx, operation.RunID, operationOptions(operation.Args))
+	outcome, runErr := e.runner.Resume(ctx, operation.RunID, e.options(operation.Args))
 	result := outcomeResult(outcome, runErr)
 	if ctx.Err() != nil {
 		return result, ctx.Err()
@@ -140,7 +151,7 @@ func (e *Executor) runResumeAll(ctx context.Context, operation *Operation) (map[
 		if err := ctx.Err(); err != nil {
 			return map[string]any{"cleared_pause": true, "runs": results}, err
 		}
-		outcome, runErr := e.runner.Resume(ctx, runID, operationOptions(operation.Args))
+		outcome, runErr := e.runner.Resume(ctx, runID, e.options(operation.Args))
 		results = append(results, outcomeResult(outcome, runErr))
 	}
 	return map[string]any{
@@ -163,7 +174,7 @@ func (e *Executor) runRefine(ctx context.Context, operation *Operation) (map[str
 	if err != nil {
 		return nil, err
 	}
-	outcome, runErr := e.runner.Resume(ctx, operation.RunID, operationOptions(operation.Args))
+	outcome, runErr := e.runner.Resume(ctx, operation.RunID, e.options(operation.Args))
 	result := outcomeResult(outcome, runErr)
 	result["target"] = prepared.Target
 	result["feedback_file"] = prepared.FeedbackFile
@@ -196,7 +207,7 @@ func (e *Executor) runRerun(ctx context.Context, operation *Operation) (map[stri
 		Task:    task,
 		Ref:     run.Ref,
 		Repo:    run.Repo,
-		Options: operationOptions(operation.Args),
+		Options: e.options(operation.Args),
 	})
 	runErr := outcome.Err
 	result := outcomeResult(outcome, runErr)
@@ -213,6 +224,9 @@ func operationOptions(args map[string]any) pipeline.Options {
 	options := pipeline.Options{}
 	if value, ok := args["auto"].(bool); ok {
 		options.AutoApprove = value
+	}
+	if value, ok := args["create_pr"].(bool); ok {
+		options.CreatePR = value
 	}
 	switch value := args["budget_usd"].(type) {
 	case float64:
@@ -239,4 +253,48 @@ func outcomeResult(outcome runner.Outcome, runErr error) map[string]any {
 		result["error"] = runErr.Error()
 	}
 	return result
+}
+
+func (e *Executor) runMerge(ctx context.Context, operation *Operation) (map[string]any, error) {
+	if err := ValidateRunID(operation.RunID); err != nil {
+		return map[string]any{"run_id": operation.RunID}, err
+	}
+	p := pipeline.New(e.cfg)
+	prURL, _ := operation.Args["pr_url"].(string)
+	if strings.TrimSpace(prURL) != "" {
+		if _, err := p.AdoptPR(ctx, operation.RunID, prURL); err != nil {
+			return map[string]any{"run_id": operation.RunID, "pr_url": prURL}, err
+		}
+	}
+	if err := p.MergePR(ctx, operation.RunID); err != nil {
+		return map[string]any{"run_id": operation.RunID, "pr_url": prURL}, err
+	}
+	run, err := pipeline.LoadRun(e.cfg, operation.RunID)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]any{
+		"run_id":  run.ID,
+		"task_id": run.Task.ExternalID,
+		"status":  run.Status,
+		"stage":   run.Stage,
+		"pr_url":  run.PRURL,
+		"merged":  run.PRMerged,
+	}
+	if record, found := e.store.FindByRunID(run.ID); found {
+		record.Status = "succeeded"
+		record.RunID = run.ID
+		record.ContentHash = run.Task.ContentHash
+		if err := e.store.Put(record); err != nil {
+			return result, err
+		}
+	} else if record, found := e.store.FindByID(run.Task.ExternalID); found {
+		record.Status = "succeeded"
+		record.RunID = run.ID
+		record.ContentHash = run.Task.ContentHash
+		if err := e.store.Put(record); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }

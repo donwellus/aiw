@@ -37,6 +37,8 @@ permissions:
     effect: ask
 ---
 
+<!-- aiw-coordinator: v1 -->
+
 Você é o coordenador do projeto aiw.
 
 Regras:

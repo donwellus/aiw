@@ -273,8 +273,8 @@ aiw mcp --allow-write                   # servidor MCP usado pelo OpenCode
   resposta com `aiw_answer` e enfileira um rerun.
 - Workers continuam sendo runs do pipeline em worktrees isolados; o coordenador
   nunca trabalha nas tarefas.
-- Setup e exemplo de agente: [docs/coordinator.md](docs/coordinator.md) e
-  [examples/opencode](examples/opencode).
+- Setup do coordinator: `aiw opencode install`; detalhes em
+  [docs/coordinator.md](docs/coordinator.md).
 - Ainda não expostos: prioridade/hold, dependências e notificações proativas.
 
 ### Review, correção e merge

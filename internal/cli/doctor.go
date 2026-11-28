@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/donwellus/aiw/internal/engine"
+	opencodeinstall "github.com/donwellus/aiw/internal/opencode"
 	"github.com/donwellus/aiw/internal/source"
 	"github.com/donwellus/aiw/internal/sources"
 )
@@ -43,6 +44,20 @@ func newDoctorCommand(opts *rootOptions) *cobra.Command {
 
 			fmt.Fprintf(out, "config: %s\n", cfg.Path)
 			fmt.Fprintf(out, "raiz:   %s\n\n", cfg.Root)
+
+			if coordinator, err := opencodeinstall.Inspect(cfg.Root); err != nil {
+				warn("coordinator OpenCode: %v", err)
+			} else if !coordinator.Installed {
+				warn("coordinator OpenCode ausente; rode aiw opencode install")
+			} else if !coordinator.Current {
+				if coordinator.Version == "" {
+					warn("coordinator OpenCode sem versão; rode aiw opencode install --force")
+				} else {
+					warn("coordinator OpenCode v%s desatualizado; esperado v%s", coordinator.Version, opencodeinstall.CoordinatorVersion)
+				}
+			} else {
+				ok("coordinator OpenCode v%s", coordinator.Version)
+			}
 
 			if _, err := exec.LookPath("git"); err != nil {
 				fail("git não encontrado no PATH")

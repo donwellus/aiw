@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -54,5 +55,33 @@ func TestCIFixURLParse(t *testing.T) {
 	match := ciJobURL.FindStringSubmatch("https://github.com/o/r/actions/runs/123/job/456")
 	if len(match) < 3 || match[1] != "123" || match[2] != "456" {
 		t.Fatalf("match = %#v", match)
+	}
+}
+
+func TestValidateCompletionRequiresDeliveredPR(t *testing.T) {
+	yes := true
+	cfg := &config.Config{Delivery: config.DeliveryConfig{Merge: "auto", RequireCI: &yes}}
+	p := &Pipeline{Cfg: cfg}
+	run := &RunState{CreatePR: true}
+	if err := p.validateCompletion(run, Options{CreatePR: true}); err == nil {
+		t.Fatal("run sem PR não deveria concluir")
+	}
+	run.PRURL = "https://github.com/o/r/pull/1"
+	if err := p.validateCompletion(run, Options{CreatePR: true}); err == nil {
+		t.Fatal("PR não mergeado deveria bloquear auto merge")
+	}
+	run.PRMerged = true
+	if err := p.validateCompletion(run, Options{CreatePR: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.validateCompletion(&RunState{}, Options{}); err != nil {
+		t.Fatalf("run local deveria concluir: %v", err)
+	}
+}
+
+func TestAdoptPRRequiresURLAndBranch(t *testing.T) {
+	p := &Pipeline{}
+	if _, err := p.AdoptPR(context.Background(), "missing", ""); err == nil {
+		t.Fatal("URL vazia deveria falhar")
 	}
 }

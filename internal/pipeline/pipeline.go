@@ -216,6 +216,9 @@ func (p *Pipeline) runPipeline(ctx context.Context, run *RunState, opts Options)
 	}()
 
 	runErr = p.execute(ctx, run, trace, opts, budget)
+	if runErr == nil {
+		runErr = p.validateCompletion(run, opts)
+	}
 	if runErr != nil {
 		if errors.Is(runErr, ErrPauseRequested) {
 			run.Status = "paused"
@@ -1042,6 +1045,7 @@ type prStatus struct {
 	Mergeable        string    `json:"mergeable"`
 	MergeStateStatus string    `json:"mergeStateStatus"`
 	BaseRefName      string    `json:"baseRefName"`
+	HeadRefName      string    `json:"headRefName"`
 	ReviewDecision   string    `json:"reviewDecision"`
 	HeadRefOid       string    `json:"headRefOid"`
 	StatusChecks     []prCheck `json:"statusCheckRollup"`
@@ -1268,7 +1272,7 @@ func (p *Pipeline) markMergedRun(run *RunState) error {
 }
 
 func (p *Pipeline) readPRStatus(ctx context.Context, prURL string) (prStatus, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "state,mergeable,mergeStateStatus,baseRefName,reviewDecision,headRefOid,statusCheckRollup")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", prURL, "--json", "state,mergeable,mergeStateStatus,baseRefName,headRefName,reviewDecision,headRefOid,statusCheckRollup")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1734,6 +1738,19 @@ func (p *Pipeline) writeBack(ctx context.Context, run *RunState, runErr error, o
 func (p *Pipeline) cancelRequested(runDir string) bool {
 	_, err := os.Stat(filepath.Join(runDir, CancelMarker))
 	return err == nil
+}
+
+func (p *Pipeline) validateCompletion(run *RunState, opts Options) error {
+	if !opts.CreatePR && !run.CreatePR {
+		return nil
+	}
+	if strings.TrimSpace(run.PRURL) == "" {
+		return fmt.Errorf("%w: a run exigia PR, mas nenhum PR foi registrado", ErrDeliveryPending)
+	}
+	if p.autoMerge() && !run.PRMerged {
+		return fmt.Errorf("%w: o PR %s não foi mergeado", ErrDeliveryPending, run.PRURL)
+	}
+	return nil
 }
 
 func (p *Pipeline) pauseRequested(runDir string, opts Options) bool {

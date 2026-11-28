@@ -4,7 +4,7 @@
     "servers": {
       "aiw": {
         "type": "local",
-        "command": ["aiw", "mcp", "--allow-write"],
+        "command": [{{AIW_BIN_JSON}}, "mcp", "--allow-write"],
         "cwd": "."
       }
     }

@@ -33,9 +33,8 @@ execução:
 6. **Sem bloqueio**: ferramentas são de leitura e rápidas. Ações de execução
    longas (`work`, `resume`) não são expostas; controle assíncrono fica para a
    fase 2.
-7. **Configuração**: exemplos em `examples/opencode/`, documentação em
-   `docs/coordinator.md`; o usuário copia para `.opencode/agents` e
-   `opencode.jsonc` do projeto.
+7. **Configuração**: `aiw opencode install` instala o agente e o MCP a partir
+   dos templates embutidos no binário; documentação em `docs/coordinator.md`.
 8. **Segurança**: prompts e permissões limitam o agente; o servidor MCP não
    aceita escrita nesta versão; merge/deploy continuam humanos.
 

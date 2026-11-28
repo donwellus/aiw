@@ -181,6 +181,16 @@ func toolDefinitions(allowWrite bool) []map[string]any {
 			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true},
 		},
 		map[string]any{
+			"name":        "merge",
+			"title":       "Adotar e mergear PR",
+			"description": "Adota um PR existente (opcionalmente por URL) e enfileira o merge após validar CI. Requer daemon ativo.",
+			"inputSchema": objectSchema(map[string]any{
+				"run_id": map[string]any{"type": "string", "description": "ID da run"},
+				"pr_url": map[string]any{"type": "string", "description": "URL do PR existente; se omitida, usa run.PRURL"},
+			}, "run_id"),
+			"annotations": map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false},
+		},
+		map[string]any{
 			"name":        "resume",
 			"title":       "Retomar",
 			"description": "Enfileira resume de uma run ou de todas as paused/canceled. Requer daemon ativo.",
@@ -384,6 +394,8 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 		return s.toolPause(params.Arguments)
 	case "unpause":
 		return s.toolUnpause()
+	case "merge":
+		return s.toolMerge(params.Arguments)
 	case "cancel":
 		return s.toolCancel(ctx, params.Arguments)
 	case "resume":
@@ -413,7 +425,7 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, *rpcEr
 
 func writeTool(name string) bool {
 	switch name {
-	case "pause", "unpause", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
+	case "pause", "unpause", "merge", "resume", "approve", "release", "clean_apply", "operation_cancel", "cancel", "answer", "refine", "create_issue", "close_issue", "ci_decision":
 		return true
 	default:
 		return false
@@ -822,6 +834,36 @@ func (s *Server) toolUnpause() (any, *rpcError) {
 	value, err := toolResult(result)
 	if err != nil {
 		return toolError(err.Error()), nil
+	}
+	return value, nil
+}
+
+func (s *Server) toolMerge(raw json.RawMessage) (any, *rpcError) {
+	var args struct {
+		RunID string `json:"run_id"`
+		PRURL string `json:"pr_url"`
+	}
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, invalidParams(err)
+	}
+	if err := control.ValidateRunID(args.RunID); err != nil {
+		return nil, invalidParams(err)
+	}
+	info, active := control.DaemonActive(s.cfg, 15*time.Second)
+	if !active {
+		return toolError("daemon não está ativo; inicie aiw daemon para processar o merge"), nil
+	}
+	store, err := control.OpenOperationStore(s.cfg)
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	operation, err := store.Enqueue(control.ActionMerge, args.RunID, map[string]any{"pr_url": args.PRURL})
+	if err != nil {
+		return toolError(err.Error()), nil
+	}
+	value, err := toolResult(map[string]any{"operation": operation, "daemon": info})
+	if err != nil {
+		return nil, invalidParams(err)
 	}
 	return value, nil
 }
